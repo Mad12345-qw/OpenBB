@@ -245,6 +245,9 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
             json={"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
         )
         response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            raise HTTPException(status_code=502, detail=data)
 
 
 async def add_feishu_reaction(message_id: str, emoji_type: str = "Typing") -> None:
@@ -253,9 +256,12 @@ async def add_feishu_reaction(message_id: str, emoji_type: str = "Typing") -> No
         response = await client.post(
             f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
             headers={"Authorization": f"Bearer {token}"},
-            json={"emoji_type": emoji_type},
+            json={"reaction_type": {"emoji_type": emoji_type}},
         )
         response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            raise HTTPException(status_code=502, detail=data)
 
 
 async def process_feishu_query(message_id: str, text: str) -> None:
@@ -318,13 +324,13 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     if not text:
         try:
             await add_feishu_reaction(message_id, "OK")
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
         return {"status": "empty"}
 
     try:
         await add_feishu_reaction(message_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
     background_tasks.add_task(process_feishu_query, message_id, text)
     return {"status": "accepted"}
