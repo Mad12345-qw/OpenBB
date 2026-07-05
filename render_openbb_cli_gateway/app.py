@@ -20,7 +20,7 @@ OPENBB_ALLOWED_PREFIXES = tuple(
     prefix.strip()
     for prefix in os.getenv(
         "OPENBB_ALLOWED_PREFIXES",
-        "/equity,/economy,/index,/crypto,/etf,/currency,/commodity,/news,/technical",
+        "/equity,/economy,/index,/crypto,/etf,/currency,/commodity,/fixedincome,/derivatives,/news,/technical",
     ).split(",")
     if prefix.strip()
 )
