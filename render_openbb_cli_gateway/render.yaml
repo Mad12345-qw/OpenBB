@@ -13,7 +13,7 @@ services:
       - key: OPENBB_TIMEOUT_SECONDS
         value: "120"
       - key: OPENBB_ALLOWED_PREFIXES
-        value: /equity,/economy,/index,/crypto,/etf,/currency,/commodity,/news,/technical
+        value: /equity,/economy,/index,/crypto,/etf,/currency,/commodity,/fixedincome,/derivatives,/news,/technical
       - key: MIKOTO_BASE_URL
         sync: false
       - key: MIKOTO_API_KEY
