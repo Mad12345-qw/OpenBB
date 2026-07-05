@@ -247,6 +247,17 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
         response.raise_for_status()
 
 
+async def add_feishu_reaction(message_id: str, emoji_type: str = "Typing") -> None:
+    token = await get_feishu_tenant_token()
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"emoji_type": emoji_type},
+        )
+        response.raise_for_status()
+
+
 async def process_feishu_query(message_id: str, text: str) -> None:
     try:
         answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS)
@@ -305,9 +316,15 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     text = re.sub(r"@\S+", "", text).strip()
 
     if not text:
-        await reply_feishu_message(message_id, "收到。可以发一个投研问题，比如：查 AAPL 的估值和最近一年股价。")
+        try:
+            await add_feishu_reaction(message_id, "OK")
+        except Exception:
+            pass
         return {"status": "empty"}
 
-    await reply_feishu_message(message_id, "👌 收到，正在查数据，稍等一下。")
+    try:
+        await add_feishu_reaction(message_id)
+    except Exception:
+        pass
     background_tasks.add_task(process_feishu_query, message_id, text)
     return {"status": "accepted"}
