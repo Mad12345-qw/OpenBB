@@ -108,6 +108,17 @@ def fmt_percent(value: Any, digits: int = 2, ratio: bool = False) -> str:
     return f"{number:.{digits}f}%"
 
 
+def safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    try:
+        num = float(numerator)
+        den = float(denominator)
+    except (TypeError, ValueError):
+        return None
+    if den == 0:
+        return None
+    return num / den
+
+
 async def fetch_fmp_json(client: httpx.AsyncClient, path: str, params: dict[str, str] | None = None) -> Any:
     if not FMP_API_KEY:
         raise HTTPException(status_code=500, detail="FMP_API_KEY is not configured")
@@ -159,6 +170,21 @@ async def answer_equity_snapshot(message: str) -> str | None:
     if latest_income.get("revenue") and previous_income.get("revenue"):
         revenue_growth = (float(latest_income["revenue"]) / float(previous_income["revenue"]) - 1) * 100
 
+    pe_value = (
+        quote_row.get("pe")
+        or metrics_row.get("peRatioTTM")
+        or (1 / float(metrics_row["earningsYieldTTM"]) if metrics_row.get("earningsYieldTTM") else None)
+        or safe_ratio(quote_row.get("price"), latest_income.get("epsDiluted") or latest_income.get("eps"))
+    )
+    ps_value = metrics_row.get("priceToSalesRatioTTM") or safe_ratio(quote_row.get("marketCap"), latest_income.get("revenue"))
+    ev_ebitda_value = metrics_row.get("enterpriseValueOverEBITDATTM") or metrics_row.get("evToEBITDATTM")
+    gross_margin = latest_income.get("grossProfitRatio") or safe_ratio(latest_income.get("grossProfit"), latest_income.get("revenue"))
+    operating_margin = latest_income.get("operatingIncomeRatio") or safe_ratio(
+        latest_income.get("operatingIncome"),
+        latest_income.get("revenue"),
+    )
+    net_margin = latest_income.get("netIncomeRatio") or safe_ratio(latest_income.get("netIncome"), latest_income.get("revenue"))
+
     company_name = quote_row.get("name") or symbol
     lines = [
         f"{symbol} {company_name} 投研快照",
@@ -171,16 +197,16 @@ async def answer_equity_snapshot(message: str) -> str | None:
         f"- 市值：{fmt_number(quote_row.get('marketCap'))}",
         "",
         "估值",
-        f"- PE：{fmt_number(quote_row.get('pe') or metrics_row.get('peRatioTTM'))}",
-        f"- PS：{fmt_number(metrics_row.get('priceToSalesRatioTTM'))}",
-        f"- EV/EBITDA：{fmt_number(metrics_row.get('enterpriseValueOverEBITDATTM'))}",
+        f"- PE：{fmt_number(pe_value)}",
+        f"- PS：{fmt_number(ps_value)}",
+        f"- EV/EBITDA：{fmt_number(ev_ebitda_value)}",
         "",
         "收入与利润率",
         f"- 最近年度收入：{fmt_number(latest_income.get('revenue'))}",
         f"- 收入同比增长：{fmt_percent(revenue_growth)}",
-        f"- 毛利率：{fmt_percent(latest_income.get('grossProfitRatio'), ratio=True)}",
-        f"- 营业利润率：{fmt_percent(latest_income.get('operatingIncomeRatio'), ratio=True)}",
-        f"- 净利率：{fmt_percent(latest_income.get('netIncomeRatio'), ratio=True)}",
+        f"- 毛利率：{fmt_percent(gross_margin, ratio=True)}",
+        f"- 营业利润率：{fmt_percent(operating_margin, ratio=True)}",
+        f"- 净利率：{fmt_percent(net_margin, ratio=True)}",
         "",
         "简评",
         "这是一版快速数据摘要；后续可以再加同行对比、历史估值分位和图表卡片。",
