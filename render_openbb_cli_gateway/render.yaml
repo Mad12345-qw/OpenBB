@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: openbb-platform-cli-gateway
+    runtime: python
+    plan: free
+    rootDir: render_openbb_cli_gateway
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: API_TOKEN
+        generateValue: true
+      - key: OPENBB_TIMEOUT_SECONDS
+        value: "120"
+      - key: OPENBB_ALLOWED_PREFIXES
+        value: /equity,/economy,/index,/crypto,/etf,/currency,/commodity,/news,/technical
+      - key: MIKOTO_BASE_URL
+        sync: false
+      - key: MIKOTO_API_KEY
+        sync: false
+      - key: MIKOTO_MODEL
+        value: gpt-5.5
+      - key: FEISHU_APP_ID
+        sync: false
+      - key: FEISHU_APP_SECRET
+        sync: false
+      - key: FEISHU_VERIFICATION_TOKEN
+        sync: false
