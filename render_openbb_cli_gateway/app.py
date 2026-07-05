@@ -113,7 +113,7 @@ async def fetch_fmp_json(client: httpx.AsyncClient, path: str, params: dict[str,
         raise HTTPException(status_code=500, detail="FMP_API_KEY is not configured")
     request_params = dict(params or {})
     request_params["apikey"] = FMP_API_KEY
-    response = await client.get(f"https://financialmodelingprep.com/api/v3/{path}", params=request_params)
+    response = await client.get(f"https://financialmodelingprep.com/stable/{path}", params=request_params)
     response.raise_for_status()
     return response.json()
 
@@ -125,14 +125,15 @@ async def answer_equity_snapshot(message: str) -> str | None:
 
     today = date.today()
     start_date = today - timedelta(days=370)
+    print(f"Fast equity snapshot path: symbol={symbol}", flush=True)
     async with httpx.AsyncClient(timeout=45) as client:
-        quote_task = fetch_fmp_json(client, f"quote/{symbol}")
-        metrics_task = fetch_fmp_json(client, f"key-metrics-ttm/{symbol}")
-        income_task = fetch_fmp_json(client, f"income-statement/{symbol}", {"period": "annual", "limit": "5"})
+        quote_task = fetch_fmp_json(client, "quote", {"symbol": symbol})
+        metrics_task = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
+        income_task = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
         history_task = fetch_fmp_json(
             client,
-            f"historical-price-full/{symbol}",
-            {"from": start_date.isoformat(), "to": today.isoformat()},
+            "historical-price-eod/full",
+            {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
         )
         quote, metrics, income, history = await asyncio.gather(
             quote_task,
@@ -147,7 +148,7 @@ async def answer_equity_snapshot(message: str) -> str | None:
     latest_income = income_rows[0] if income_rows else {}
     previous_income = income_rows[1] if len(income_rows) > 1 else {}
 
-    historical = history.get("historical", []) if isinstance(history, dict) else []
+    historical = history.get("historical", []) if isinstance(history, dict) else history if isinstance(history, list) else []
     latest_close = historical[0].get("close") if historical else quote_row.get("price")
     first_close = historical[-1].get("close") if historical else None
     one_year_return = None
@@ -300,9 +301,14 @@ def extract_commands(model_text: str) -> list[str]:
 
 async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
     if is_equity_research_request(message):
-        equity_answer = await answer_equity_snapshot(message)
-        if equity_answer:
-            return equity_answer
+        try:
+            equity_answer = await answer_equity_snapshot(message)
+            if equity_answer:
+                return equity_answer
+        except Exception as exc:
+            print(f"Fast equity snapshot failed: {type(exc).__name__}: {exc}", flush=True)
+            return f"股票快照查询失败：{type(exc).__name__}: {exc}"
+        return "股票快照查询失败：没有识别到可用股票代码或 FMP_API_KEY 未配置。"
 
     command_text = await call_model(
         [
