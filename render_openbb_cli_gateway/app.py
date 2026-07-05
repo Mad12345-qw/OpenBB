@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="OpenBB Platform CLI Gateway")
+SEEN_FEISHU_MESSAGE_IDS: set[str] = set()
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
@@ -189,7 +190,10 @@ async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
     )
     commands = extract_commands(command_text)
     if not commands:
-        return "I could not map that request to an allow-listed OpenBB Platform CLI routine."
+        return (
+            "我收到了，但这句话没有被识别成可执行的 OpenBB 数据查询。\n"
+            "可以这样问：查 AAPL 的估值、收入增长、利润率和最近一年股价。"
+        )
 
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
     summary = await call_model(
@@ -243,6 +247,14 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
         response.raise_for_status()
 
 
+async def process_feishu_query(message_id: str, text: str) -> None:
+    try:
+        answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS)
+    except Exception as exc:
+        answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
+    await reply_feishu_message(message_id, answer[:3000])
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "runtime": "openbb-platform-cli"}
@@ -268,7 +280,7 @@ async def chat_endpoint(payload: ChatRequest, authorization: str | None = Header
 
 
 @app.post("/feishu/events")
-async def feishu_events(request: Request) -> dict[str, Any]:
+async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     body = await request.json()
     if "challenge" in body:
         return {"challenge": body["challenge"]}
@@ -281,6 +293,9 @@ async def feishu_events(request: Request) -> dict[str, Any]:
     message_id = message.get("message_id", "")
     if not message_id:
         return {"status": "ignored"}
+    if message_id in SEEN_FEISHU_MESSAGE_IDS:
+        return {"status": "duplicate"}
+    SEEN_FEISHU_MESSAGE_IDS.add(message_id)
 
     content = message.get("content", "{}")
     try:
@@ -290,9 +305,9 @@ async def feishu_events(request: Request) -> dict[str, Any]:
     text = re.sub(r"@\S+", "", text).strip()
 
     if not text:
-        await reply_feishu_message(message_id, "Please send an investment research question.")
+        await reply_feishu_message(message_id, "收到。可以发一个投研问题，比如：查 AAPL 的估值和最近一年股价。")
         return {"status": "empty"}
 
-    answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS)
-    await reply_feishu_message(message_id, answer[:3000])
-    return {"status": "ok"}
+    await reply_feishu_message(message_id, "👌 收到，正在查数据，稍等一下。")
+    background_tasks.add_task(process_feishu_query, message_id, text)
+    return {"status": "accepted"}
