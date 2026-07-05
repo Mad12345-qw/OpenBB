@@ -5,6 +5,7 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any
+from datetime import date, timedelta
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
@@ -34,6 +35,7 @@ FEISHU_VERIFICATION_TOKEN = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
 MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
+FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
 OPENBB_CREDENTIAL_ENV = {
     "fmp_api_key": "FMP_API_KEY",
@@ -60,6 +62,129 @@ class RoutineRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+
+
+def extract_symbol(message: str) -> str | None:
+    blocked = {"API", "CLI", "GDP", "CPI", "FRED", "FMP", "ETF", "USD", "PE", "PS"}
+    for match in re.findall(r"\b[A-Z]{1,6}\b", message.upper()):
+        if match not in blocked:
+            return match
+    return None
+
+
+def is_equity_research_request(message: str) -> bool:
+    if not extract_symbol(message):
+        return False
+    keywords = ("估值", "收入", "利润", "股价", "财报", "基本面", "营收", "毛利", "净利", "PE", "PS")
+    return any(keyword in message.upper() for keyword in keywords)
+
+
+def fmt_number(value: Any, digits: int = 2) -> str:
+    if value in (None, ""):
+        return "N/A"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    abs_number = abs(number)
+    if abs_number >= 1_000_000_000_000:
+        return f"{number / 1_000_000_000_000:.{digits}f}T"
+    if abs_number >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.{digits}f}B"
+    if abs_number >= 1_000_000:
+        return f"{number / 1_000_000:.{digits}f}M"
+    return f"{number:.{digits}f}"
+
+
+def fmt_percent(value: Any, digits: int = 2, ratio: bool = False) -> str:
+    if value in (None, ""):
+        return "N/A"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if ratio:
+        number *= 100
+    return f"{number:.{digits}f}%"
+
+
+async def fetch_fmp_json(client: httpx.AsyncClient, path: str, params: dict[str, str] | None = None) -> Any:
+    if not FMP_API_KEY:
+        raise HTTPException(status_code=500, detail="FMP_API_KEY is not configured")
+    request_params = dict(params or {})
+    request_params["apikey"] = FMP_API_KEY
+    response = await client.get(f"https://financialmodelingprep.com/api/v3/{path}", params=request_params)
+    response.raise_for_status()
+    return response.json()
+
+
+async def answer_equity_snapshot(message: str) -> str | None:
+    symbol = extract_symbol(message)
+    if not symbol or not FMP_API_KEY:
+        return None
+
+    today = date.today()
+    start_date = today - timedelta(days=370)
+    async with httpx.AsyncClient(timeout=45) as client:
+        quote_task = fetch_fmp_json(client, f"quote/{symbol}")
+        metrics_task = fetch_fmp_json(client, f"key-metrics-ttm/{symbol}")
+        income_task = fetch_fmp_json(client, f"income-statement/{symbol}", {"period": "annual", "limit": "5"})
+        history_task = fetch_fmp_json(
+            client,
+            f"historical-price-full/{symbol}",
+            {"from": start_date.isoformat(), "to": today.isoformat()},
+        )
+        quote, metrics, income, history = await asyncio.gather(
+            quote_task,
+            metrics_task,
+            income_task,
+            history_task,
+        )
+
+    quote_row = quote[0] if isinstance(quote, list) and quote else {}
+    metrics_row = metrics[0] if isinstance(metrics, list) and metrics else {}
+    income_rows = income if isinstance(income, list) else []
+    latest_income = income_rows[0] if income_rows else {}
+    previous_income = income_rows[1] if len(income_rows) > 1 else {}
+
+    historical = history.get("historical", []) if isinstance(history, dict) else []
+    latest_close = historical[0].get("close") if historical else quote_row.get("price")
+    first_close = historical[-1].get("close") if historical else None
+    one_year_return = None
+    if latest_close and first_close:
+        one_year_return = (float(latest_close) / float(first_close) - 1) * 100
+
+    revenue_growth = None
+    if latest_income.get("revenue") and previous_income.get("revenue"):
+        revenue_growth = (float(latest_income["revenue"]) / float(previous_income["revenue"]) - 1) * 100
+
+    company_name = quote_row.get("name") or symbol
+    lines = [
+        f"{symbol} {company_name} 投研快照",
+        "",
+        "数据源：FMP，走快速 API 路径，未走交互式 CLI。",
+        "",
+        "股价",
+        f"- 最新价格：{fmt_number(quote_row.get('price') or latest_close)}",
+        f"- 近一年涨跌幅：{fmt_percent(one_year_return)}",
+        f"- 市值：{fmt_number(quote_row.get('marketCap'))}",
+        "",
+        "估值",
+        f"- PE：{fmt_number(quote_row.get('pe') or metrics_row.get('peRatioTTM'))}",
+        f"- PS：{fmt_number(metrics_row.get('priceToSalesRatioTTM'))}",
+        f"- EV/EBITDA：{fmt_number(metrics_row.get('enterpriseValueOverEBITDATTM'))}",
+        "",
+        "收入与利润率",
+        f"- 最近年度收入：{fmt_number(latest_income.get('revenue'))}",
+        f"- 收入同比增长：{fmt_percent(revenue_growth)}",
+        f"- 毛利率：{fmt_percent(latest_income.get('grossProfitRatio'), ratio=True)}",
+        f"- 营业利润率：{fmt_percent(latest_income.get('operatingIncomeRatio'), ratio=True)}",
+        f"- 净利率：{fmt_percent(latest_income.get('netIncomeRatio'), ratio=True)}",
+        "",
+        "简评",
+        "这是一版快速数据摘要；后续可以再加同行对比、历史估值分位和图表卡片。",
+    ]
+    return "\n".join(lines)
 
 
 def write_openbb_user_settings() -> None:
@@ -174,6 +299,11 @@ def extract_commands(model_text: str) -> list[str]:
 
 
 async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
+    if is_equity_research_request(message):
+        equity_answer = await answer_equity_snapshot(message)
+        if equity_answer:
+            return equity_answer
+
     command_text = await call_model(
         [
             {
