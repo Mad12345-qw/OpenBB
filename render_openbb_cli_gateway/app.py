@@ -34,6 +34,21 @@ MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
 
+OPENBB_CREDENTIAL_ENV = {
+    "fmp_api_key": "FMP_API_KEY",
+    "polygon_api_key": "POLYGON_API_KEY",
+    "benzinga_api_key": "BENZINGA_API_KEY",
+    "fred_api_key": "FRED_API_KEY",
+    "nasdaq_api_key": "NASDAQ_API_KEY",
+    "intrinio_api_key": "INTRINIO_API_KEY",
+    "alpha_vantage_api_key": "ALPHA_VANTAGE_API_KEY",
+    "biztoc_api_key": "BIZTOC_API_KEY",
+    "tradier_api_key": "TRADIER_API_KEY",
+    "tradier_account_type": "TRADIER_ACCOUNT_TYPE",
+    "tradingeconomics_api_key": "TRADINGECONOMICS_API_KEY",
+    "tiingo_token": "TIINGO_TOKEN",
+}
+
 
 class RoutineRequest(BaseModel):
     routine: str | None = Field(default=None, description="OpenBB Platform CLI routine text.")
@@ -44,6 +59,24 @@ class RoutineRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+
+
+def write_openbb_user_settings() -> None:
+    credentials = {
+        key: value
+        for key, env_name in OPENBB_CREDENTIAL_ENV.items()
+        if (value := os.getenv(env_name, "").strip())
+    }
+    if not credentials:
+        return
+
+    settings_dir = Path.home() / ".openbb_platform"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "user_settings.json"
+    settings_path.write_text(
+        json.dumps({"credentials": credentials}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def require_api_token(authorization: str | None) -> None:
@@ -213,6 +246,11 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "runtime": "openbb-platform-cli"}
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    write_openbb_user_settings()
 
 
 @app.post("/routine")
