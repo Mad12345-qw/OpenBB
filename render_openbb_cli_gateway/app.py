@@ -75,8 +75,35 @@ def extract_symbol(message: str) -> str | None:
 def is_equity_research_request(message: str) -> bool:
     if not extract_symbol(message):
         return False
-    keywords = ("估值", "收入", "利润", "股价", "财报", "基本面", "营收", "毛利", "净利", "PE", "PS")
+    keywords = (
+        "\u4f30\u503c",
+        "\u6536\u5165",
+        "\u5229\u6da6",
+        "\u80a1\u4ef7",
+        "\u8d22\u62a5",
+        "\u57fa\u672c\u9762",
+        "\u8425\u6536",
+        "\u6bdb\u5229",
+        "\u51c0\u5229",
+        "PE",
+        "PS",
+    )
     return any(keyword in message.upper() for keyword in keywords)
+
+
+def is_smalltalk_message(message: str) -> bool:
+    normalized = re.sub(r"[\s,.;:!?，。！？、~～]+", "", message).lower()
+    return normalized in {
+        "hi",
+        "hello",
+        "hey",
+        "test",
+        "ping",
+        "\u54c8\u55bd",
+        "\u4f60\u597d",
+        "\u5728\u5417",
+        "\u6d4b\u8bd5",
+    }
 
 
 def fmt_number(value: Any, digits: int = 2) -> str:
@@ -489,6 +516,13 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
         except Exception as exc:
             print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
         return {"status": "empty"}
+
+    if is_smalltalk_message(text):
+        try:
+            await add_feishu_reaction(message_id, "OK")
+        except Exception as exc:
+            print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
+        return {"status": "smalltalk_ignored"}
 
     try:
         await add_feishu_reaction(message_id)
