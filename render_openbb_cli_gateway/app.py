@@ -55,6 +55,11 @@ TICKER_DIRECTORY = [
     {"symbol": "AVGO", "name": "Broadcom Inc.", "aliases": ["broadcom", "\u535a\u901a"]},
     {"symbol": "NFLX", "name": "Netflix Inc.", "aliases": ["netflix", "\u5948\u98de"]},
     {"symbol": "BABA", "name": "Alibaba Group Holding", "aliases": ["alibaba", "\u963f\u91cc", "\u963f\u91cc\u5df4\u5df4"]},
+    {"symbol": "0700.HK", "name": "Tencent Holdings Limited", "aliases": ["tencent", "\u817e\u8baf", "\u9a30\u8a0a", "0700"]},
+    {"symbol": "7203.T", "name": "Toyota Motor Corp.", "aliases": ["toyota", "\u4e30\u7530", "\u8c50\u7530", "7203"]},
+    {"symbol": "9988.HK", "name": "Alibaba Group Holding Limited", "aliases": ["alibaba hk", "\u963f\u91cc\u6e2f\u80a1", "9988"]},
+    {"symbol": "3690.HK", "name": "Meituan", "aliases": ["meituan", "\u7f8e\u56e2", "\u7f8e\u5718", "3690"]},
+    {"symbol": "1810.HK", "name": "Xiaomi Corporation", "aliases": ["xiaomi", "\u5c0f\u7c73", "1810"]},
 ]
 
 SECTION_LABELS = {
@@ -160,6 +165,31 @@ def normalize_search_text(text: str) -> str:
     return compact_message(re.sub(r"^(search|find|\u9009\u80a1|\u627e|\u641c|\u641c\u7d22)", "", text.strip(), flags=re.IGNORECASE))
 
 
+def parse_search_command(text: str) -> tuple[str, str] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    english_match = re.match(r"^(?:search|find)\s+(?:(stock|equity|etf)\s+)?(.+)$", raw, flags=re.IGNORECASE)
+    if english_match:
+        asset_word = (english_match.group(1) or "").lower()
+        query = english_match.group(2).strip()
+        asset = "etf" if asset_word == "etf" else "equity"
+        return (asset, query) if query else None
+
+    patterns: list[tuple[str, str]] = [
+        (r"^(?:\u641c\u7d22ETF|\u641cETF|ETF\u641c\u7d22|ETF)\s*(.+)$", "etf"),
+        (r"^(?:\u641c\u7d22\u80a1\u7968|\u641c\u80a1\u7968|\u9009\u80a1|\u80a1\u7968\u641c\u7d22|\u80a1\u7968)\s*(.+)$", "equity"),
+        (r"^(?:\u641c\u7d22|\u641c|\u627e)\s+(.+)$", "equity"),
+    ]
+    for pattern, asset in patterns:
+        match = re.match(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            query = match.group(1).strip()
+            return (asset, query) if query else None
+    return None
+
+
 def search_ticker_candidates(query: str, limit: int = 6) -> list[dict[str, Any]]:
     normalized = normalize_search_text(query)
     if not normalized:
@@ -237,9 +267,10 @@ def build_equity_console_card() -> dict[str, Any]:
         "**\u5168\u5e02\u573a\u80a1\u7968\u641c\u7d22**\n"
         "\u8fd9\u91cc\u4e0d\u662f\u56fa\u5b9a\u80a1\u7968\u5217\u8868\uff0c\u800c\u662f\u5168\u5e02\u573a\u641c\u7d22\u5165\u53e3\u3002\n\n"
         "\u8bf7\u76f4\u63a5\u5728\u804a\u5929\u6846\u53d1\u9001\uff1a\n"
-        "`\u641c\u80a1\u7968 \u4efb\u610f\u516c\u53f8\u540d/\u4ee3\u7801`\n\n"
+        "`\u641c\u80a1\u7968 \u4efb\u610f\u516c\u53f8\u540d/\u4ee3\u7801`\uff0c\u4e2d\u95f4\u6709\u6ca1\u6709\u7a7a\u683c\u90fd\u53ef\u4ee5\u3002\n\n"
         "\u793a\u4f8b\uff1a\n"
         "`\u641c\u80a1\u7968 AAPL`\n"
+        "`\u641c\u80a1\u7968\u817e\u8baf`\n"
         "`\u641c\u80a1\u7968 \u82f9\u679c`\n"
         "`\u641c\u80a1\u7968 0700`\n"
         "`\u641c\u80a1\u7968 Toyota`\n"
@@ -257,9 +288,10 @@ def build_etf_console_card() -> dict[str, Any]:
         "**ETF \u641c\u7d22**\n"
         "\u8fd9\u91cc\u4e0d\u662f\u56fa\u5b9a ETF \u5217\u8868\uff0c\u800c\u662f ETF \u641c\u7d22\u5165\u53e3\u3002\n\n"
         "\u8bf7\u76f4\u63a5\u5728\u804a\u5929\u6846\u53d1\u9001\uff1a\n"
-        "`\u641cETF \u4efb\u610f ETF \u4ee3\u7801/\u540d\u79f0`\n\n"
+        "`\u641cETF \u4efb\u610f ETF \u4ee3\u7801/\u540d\u79f0`\uff0c\u4e2d\u95f4\u6709\u6ca1\u6709\u7a7a\u683c\u90fd\u53ef\u4ee5\u3002\n\n"
         "\u793a\u4f8b\uff1a\n"
         "`\u641cETF SPY`\n"
+        "`\u641cETFSPY`\n"
         "`\u641cETF QQQ`\n"
         "`\u641cETF VOO`\n\n"
         "\u70b9\u9009\u5019\u9009 ETF \u540e\uff0c\u6211\u4f1a\u751f\u6210 ETF \u884c\u60c5\u6307\u4ee4\u5e76\u8fd4\u56de\u4ef7\u683c/\u8fd1\u4e00\u5e74\u8868\u73b0\u3002"
@@ -308,6 +340,22 @@ def build_symbol_candidates_card(query: str, candidates: list[dict[str, Any]], a
         for idx, item in enumerate(candidates)
     ]
     return build_interactive_card("\u9009\u62e9\u6807\u7684", content, actions)
+
+
+def build_search_empty_card(query: str, asset: str = "equity") -> dict[str, Any]:
+    asset_label = "ETF" if asset == "etf" else "\u80a1\u7968"
+    example = "\u641cETF SPY" if asset == "etf" else "\u641c\u80a1\u7968 0700.HK"
+    content = (
+        f"**{asset_label}\u641c\u7d22\u6ca1\u6709\u8fd4\u56de\u5019\u9009**\n"
+        f"\u5df2\u8bc6\u522b\u5230\u4f60\u8981\u641c\u7d22\uff1a`{query}`\n\n"
+        "\u8fd9\u6b21\u6ca1\u6709\u8fd4\u56de\u5019\u9009\uff0c\u5e38\u89c1\u539f\u56e0\u662f FMP \u641c\u7d22\u63a5\u53e3\u4e34\u65f6\u9650\u6d41\uff0c"
+        "\u6216\u516c\u53f8\u540d\u9700\u8981\u66f4\u660e\u786e\u7684\u4ee3\u7801/\u82f1\u6587\u540d\u3002\n\n"
+        f"\u53ef\u4ee5\u6539\u53d1\uff1a`{example}`\uff0c\u6216\u7a0d\u540e\u91cd\u8bd5\u540c\u4e00\u4e2a\u641c\u7d22\u3002"
+    )
+    actions = [
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
+    ]
+    return build_interactive_card("\u641c\u7d22\u672a\u547d\u4e2d", content, actions, "yellow")
 
 
 def build_metric_picker_card(symbol: str, name: str = "") -> dict[str, Any]:
@@ -1294,17 +1342,18 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     except Exception as exc:
         print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
 
-    search_match = re.match(r"^(?:search|find|\u641c\u80a1\u7968|\u9009\u80a1|\u80a1\u7968|\u641cETF|ETF|\u641c|\u641c\u7d22)\s+(.+)$", text, flags=re.IGNORECASE)
-    if search_match:
-        prefix = text[: search_match.start(1)]
-        query = search_match.group(1).strip()
-        asset = "etf" if "ETF" in prefix.upper() else "equity"
+    search_command = parse_search_command(text)
+    if search_command:
+        asset, query = search_command
+        print(f"Parsed Feishu search command: asset={asset} query={query}", flush=True)
         candidates = await search_fmp_candidates(query, asset)
         if not candidates:
             candidates = search_ticker_candidates(query)
         if candidates:
             await reply_feishu_card(message_id, build_symbol_candidates_card(query, candidates, asset))
             return {"status": "candidate_card_sent"}
+        await reply_feishu_card(message_id, build_search_empty_card(query, asset))
+        return {"status": "search_empty_card_sent"}
 
     await reply_feishu_card(message_id, build_query_builder_card())
     return {"status": "console_card_sent"}
