@@ -1077,6 +1077,12 @@ async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, An
     with tempfile.TemporaryDirectory() as temp_dir:
         routine_path = Path(temp_dir) / "routine.openbb"
         routine_path.write_text(routine, encoding="utf-8")
+        print(
+            "OpenBB routine start "
+            f"timeout={timeout_seconds} "
+            f"routine={routine[:500].replace(chr(10), ' | ')}",
+            flush=True,
+        )
 
         proc = await asyncio.create_subprocess_exec(
             OPENBB_COMMAND,
@@ -1095,10 +1101,16 @@ async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, An
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            print("OpenBB routine timed out", flush=True)
             raise HTTPException(status_code=504, detail="OpenBB CLI routine timed out")
 
     stdout_text = stdout.decode("utf-8", errors="replace")
     stderr_text = stderr.decode("utf-8", errors="replace")
+    print(
+        "OpenBB routine finished "
+        f"returncode={proc.returncode} stdout_len={len(stdout_text)} stderr_len={len(stderr_text)}",
+        flush=True,
+    )
     return {
         "returncode": proc.returncode,
         "stdout": stdout_text[-MAX_OUTPUT_CHARS:],
@@ -1382,17 +1394,33 @@ async def add_feishu_reaction_safely(message_id: str, emoji_type: str = FEISHU_A
         print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
 
 
-async def process_feishu_query(message_id: str, text: str) -> None:
+async def process_openbb_task(
+    message_id: str,
+    text: str,
+    *,
+    send_feishu_reply: bool,
+    timeout_seconds: int,
+) -> None:
     remember_feishu_task(message_id, status="running", input=text, started_at=now_iso())
     try:
-        answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS, message_id=message_id)
+        answer = await answer_with_openbb(text, timeout_seconds, message_id=message_id)
     except Exception as exc:
         answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
         remember_feishu_task(message_id, status="error", error=f"{type(exc).__name__}: {exc}", ended_at=now_iso())
     else:
         remember_feishu_task(message_id, status="replying", answer_preview=answer[:1000])
-    await reply_feishu_message_chunks(message_id, answer)
+    if send_feishu_reply:
+        await reply_feishu_message_chunks(message_id, answer)
     remember_feishu_task(message_id, status="done", ended_at=now_iso())
+
+
+async def process_feishu_query(message_id: str, text: str) -> None:
+    await process_openbb_task(
+        message_id,
+        text,
+        send_feishu_reply=True,
+        timeout_seconds=OPENBB_TIMEOUT_SECONDS,
+    )
 
 
 async def process_equity_card_query(message_id: str, symbol: str, sections: list[str]) -> None:
@@ -1575,6 +1603,25 @@ async def debug_task(message_id: str, authorization: str | None = Header(default
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@app.post("/debug/run")
+async def debug_run(
+    payload: ChatRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    require_api_token(authorization)
+    message_id = f"debug-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    remember_feishu_task(message_id, status="queued", input=payload.message, received_at=now_iso())
+    background_tasks.add_task(
+        process_openbb_task,
+        message_id,
+        payload.message,
+        send_feishu_reply=False,
+        timeout_seconds=payload.timeout_seconds or OPENBB_TIMEOUT_SECONDS,
+    )
+    return {"status": "queued", "message_id": message_id}
 
 
 @app.on_event("startup")
