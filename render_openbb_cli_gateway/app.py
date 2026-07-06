@@ -67,7 +67,7 @@ class ChatRequest(BaseModel):
 
 def extract_symbol(message: str) -> str | None:
     blocked = {"API", "CLI", "GDP", "CPI", "FRED", "FMP", "ETF", "USD", "PE", "PS"}
-    for match in re.findall(r"\b[A-Z]{1,6}\b", message.upper()):
+    for match in re.findall(r"(?<![A-Z0-9])[A-Z]{1,6}(?![A-Z0-9])", message.upper()):
         if match not in blocked:
             return match
     return None
