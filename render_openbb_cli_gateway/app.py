@@ -959,6 +959,12 @@ async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
                 return equity_answer
         except Exception as exc:
             print(f"Fast equity snapshot failed: {type(exc).__name__}: {exc}", flush=True)
+            symbol = extract_symbol(message)
+            if symbol:
+                try:
+                    return await answer_price_snapshot(symbol, "equity")
+                except Exception as fallback_exc:
+                    print(f"Equity price fallback failed: {type(fallback_exc).__name__}: {fallback_exc}", flush=True)
             return f"股票快照查询失败：{type(exc).__name__}: {exc}"
         return "股票快照查询失败：没有识别到可用股票代码或 FMP_API_KEY 未配置。"
 
