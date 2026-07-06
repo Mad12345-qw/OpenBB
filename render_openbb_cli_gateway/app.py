@@ -1165,9 +1165,6 @@ def format_cli_answer(question: str, commands: list[str], result: dict[str, Any]
 
 
 async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
-    if is_template_menu_request(message):
-        return build_template_menu()
-
     if OPENBB_FAST_EQUITY_SNAPSHOT and is_equity_research_request(message):
         try:
             equity_answer = await answer_equity_snapshot(message)
