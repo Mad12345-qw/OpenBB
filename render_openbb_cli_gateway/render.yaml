@@ -15,7 +15,7 @@ services:
       - key: OPENBB_EXECUTION_MODE
         value: platform_api
       - key: OPENBB_PLATFORM_PREWARM
-        value: "true"
+        value: "false"
       - key: OPENBB_PLATFORM_MAX_ROWS
         value: "80"
       - key: OPENBB_ALLOWED_PREFIXES

@@ -2080,6 +2080,15 @@ async def debug_run(
     return {"status": "queued", "message_id": message_id}
 
 
+@app.post("/debug/prewarm")
+async def debug_prewarm(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_api_token(authorization)
+    started = datetime.now(timezone.utc)
+    await get_openbb_obb()
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return {"status": "ok", "execution_mode": OPENBB_EXECUTION_MODE, "seconds": round(elapsed, 3)}
+
+
 @app.on_event("startup")
 async def startup() -> None:
     load_feishu_tasks()
