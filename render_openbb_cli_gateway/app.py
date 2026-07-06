@@ -55,7 +55,6 @@ TICKER_DIRECTORY = [
     {"symbol": "AVGO", "name": "Broadcom Inc.", "aliases": ["broadcom", "\u535a\u901a"]},
     {"symbol": "NFLX", "name": "Netflix Inc.", "aliases": ["netflix", "\u5948\u98de"]},
     {"symbol": "BABA", "name": "Alibaba Group Holding", "aliases": ["alibaba", "\u963f\u91cc", "\u963f\u91cc\u5df4\u5df4"]},
-    {"symbol": "AA", "name": "Alcoa Corporation", "aliases": ["alcoa", "\u7f8e\u94dd"]},
 ]
 
 SECTION_LABELS = {
@@ -201,18 +200,12 @@ def build_interactive_card(title: str, content: str, actions: list[dict[str, Any
 def build_query_builder_card() -> dict[str, Any]:
     content = (
         "**OpenBB Platform \u6295\u7814\u603b\u63a7\u53f0**\n"
-        "\u5148\u9009\u8d44\u4ea7/\u6570\u636e\u7c7b\u578b\uff0c\u518d\u9009\u6807\u7684\u3001\u6307\u6807\u3001\u5468\u671f\u548c\u8f93\u51fa\u683c\u5f0f\u3002\n\n"
-        "\u6700\u540e\u540e\u7aef\u4f1a\u751f\u6210\u7ed3\u6784\u5316\u6307\u4ee4\uff0c\u518d\u8c03\u7528 OpenBB / FMP / FRED / Tiingo \u7b49\u6570\u636e\u6e90\u3002"
+        "\u4e0b\u9762\u53ea\u653e\u5df2\u9a8c\u8bc1\u53ef\u6267\u884c\u7684\u529f\u80fd\u3002\u70b9\u9009\u540e\uff0c\u540e\u7aef\u4f1a\u751f\u6210\u7ed3\u6784\u5316\u6307\u4ee4\u5e76\u8c03\u7528\u6570\u636e\u6e90\u3002\n\n"
+        "\u5df2\u9a8c\u8bc1\uff1a\u7f8e\u80a1\u6295\u7814\u5feb\u7167\uff08FMP\uff09\u3002\n"
+        "\u5f85\u63a5\u5165\uff1aETF\u3001\u6307\u6570\u3001\u5b8f\u89c2\u3001\u5916\u6c47\u3001\u52a0\u5bc6\u3001\u5927\u5b97\u5546\u54c1\u3001\u65b0\u95fb\u3002"
     )
     actions = [
-        card_button("\u80a1\u7968", {"action": "asset", "asset": "equity"}, "primary"),
-        card_button("ETF", {"action": "asset", "asset": "etf"}),
-        card_button("\u6307\u6570", {"action": "asset", "asset": "index"}),
-        card_button("\u5b8f\u89c2", {"action": "asset", "asset": "macro"}),
-        card_button("\u5916\u6c47", {"action": "asset", "asset": "fx"}),
-        card_button("\u52a0\u5bc6", {"action": "asset", "asset": "crypto"}),
-        card_button("\u5927\u5b97\u5546\u54c1", {"action": "asset", "asset": "commodity"}),
-        card_button("\u65b0\u95fb", {"action": "asset", "asset": "news"}),
+        card_button("\u80a1\u7968\uff08\u5df2\u9a8c\u8bc1\uff09", {"action": "asset", "asset": "equity"}, "primary"),
     ]
     return build_interactive_card("OpenBB \u6295\u7814\u603b\u63a7\u53f0", content, actions)
 
@@ -221,7 +214,7 @@ def build_equity_console_card() -> dict[str, Any]:
     content = (
         "**\u80a1\u7968\u67e5\u8be2**\n"
         "\u5148\u9009\u6807\u7684\uff0c\u518d\u9009\u4f60\u8981\u7684\u529f\u80fd/\u6307\u6807\u3002\n\n"
-        "\u5982\u679c\u5019\u9009\u91cc\u6ca1\u6709\uff0c\u4f60\u4e5f\u53ef\u4ee5\u76f4\u63a5\u53d1\uff1a`\u9009\u80a1 \u82f9\u679c`\u3001`\u9009\u80a1 AA`\u3001`\u9009\u80a1 NVDA`\u3002"
+        "\u5982\u679c\u5019\u9009\u91cc\u6ca1\u6709\uff0c\u4f60\u4e5f\u53ef\u4ee5\u76f4\u63a5\u53d1\uff1a`\u9009\u80a1 \u82f9\u679c`\u3001`\u9009\u80a1 NVDA`\u3002"
     )
     actions = [
         card_button("\u82f9\u679c AAPL", {"action": "select_symbol", "symbol": "AAPL", "name": "Apple Inc."}, "primary"),
@@ -230,7 +223,6 @@ def build_equity_console_card() -> dict[str, Any]:
         card_button("\u8c37\u6b4c GOOGL", {"action": "select_symbol", "symbol": "GOOGL", "name": "Alphabet Inc. Class A"}),
         card_button("\u7279\u65af\u62c9 TSLA", {"action": "select_symbol", "symbol": "TSLA", "name": "Tesla Inc."}),
         card_button("\u4e9a\u9a6c\u900a AMZN", {"action": "select_symbol", "symbol": "AMZN", "name": "Amazon.com Inc."}),
-        card_button("AA Alcoa", {"action": "select_symbol", "symbol": "AA", "name": "Alcoa Corporation"}),
         card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
     ]
     return build_interactive_card("\u80a1\u7968\u67e5\u8be2", content, actions, "blue")
@@ -488,20 +480,28 @@ async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | se
     symbol = symbol.upper()
     print(f"Card equity snapshot path: symbol={symbol}, sections={','.join(sorted(selected_sections))}", flush=True)
     async with httpx.AsyncClient(timeout=45) as client:
-        quote_task = fetch_fmp_json(client, "quote", {"symbol": symbol})
-        metrics_task = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
-        income_task = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
-        history_task = fetch_fmp_json(
-            client,
-            "historical-price-eod/full",
-            {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
-        )
-        quote, metrics, income, history = await asyncio.gather(
-            quote_task,
-            metrics_task,
-            income_task,
-            history_task,
-        )
+        needs_price = "price" in selected_sections
+        needs_valuation = "valuation" in selected_sections
+        needs_income = bool({"valuation", "growth", "margin"} & selected_sections)
+        tasks: dict[str, Any] = {}
+        if needs_price or needs_valuation:
+            tasks["quote"] = fetch_fmp_json(client, "quote", {"symbol": symbol})
+        if needs_valuation:
+            tasks["metrics"] = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
+        if needs_income:
+            tasks["income"] = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
+        if needs_price:
+            tasks["history"] = fetch_fmp_json(
+                client,
+                "historical-price-eod/full",
+                {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
+            )
+        results = dict(zip(tasks.keys(), await asyncio.gather(*tasks.values()))) if tasks else {}
+
+    quote = results.get("quote", [])
+    metrics = results.get("metrics", [])
+    income = results.get("income", [])
+    history = results.get("history", [])
 
     quote_row = quote[0] if isinstance(quote, list) and quote else {}
     metrics_row = metrics[0] if isinstance(metrics, list) and metrics else {}
