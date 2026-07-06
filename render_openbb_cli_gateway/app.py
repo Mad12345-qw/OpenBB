@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 app = FastAPI(title="OpenBB Platform CLI Gateway")
 SEEN_FEISHU_MESSAGE_IDS: set[str] = set()
 SEEN_FEISHU_CARD_ACTION_IDS: set[str] = set()
+RECENT_FEISHU_TASKS: dict[str, dict[str, Any]] = {}
+MAX_RECENT_FEISHU_TASKS = 50
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
@@ -1081,9 +1083,10 @@ async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, An
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=temp_dir,
         )
 
-        cli_input = f"/exe --file {routine_path}\nexit\n".encode("utf-8")
+        cli_input = "exe --file routine.openbb\nexit\n".encode("utf-8")
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(cli_input),
@@ -1133,6 +1136,23 @@ def extract_commands(model_text: str) -> list[str]:
     return lines[:12]
 
 
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def looks_like_openbb_routine_line(line: str) -> bool:
+    if not line or any(ord(char) > 127 for char in line):
+        return False
+    command = line.split()[0].strip().lower()
+    if "/" in command:
+        return True
+    if command in {"home", "help", "exit", "clear", "about", "exe"}:
+        return True
+    if command.startswith(("/", "?")):
+        return True
+    return False
+
+
 def commands_from_user_message(message: str) -> list[str]:
     lines = []
     for raw_line in message.splitlines():
@@ -1141,7 +1161,28 @@ def commands_from_user_message(message: str) -> list[str]:
             if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
                 continue
             lines.append(line)
-    return lines
+    if not lines:
+        return []
+    if any(any(ord(char) > 127 for char in line) for line in lines):
+        return []
+    if any(looks_like_openbb_routine_line(line) for line in lines):
+        return lines
+    return []
+
+
+def remember_feishu_task(message_id: str, **updates: Any) -> None:
+    task = RECENT_FEISHU_TASKS.setdefault(
+        message_id,
+        {
+            "message_id": message_id,
+            "created_at": now_iso(),
+            "status": "queued",
+        },
+    )
+    task.update(updates)
+    while len(RECENT_FEISHU_TASKS) > MAX_RECENT_FEISHU_TASKS:
+        oldest_key = next(iter(RECENT_FEISHU_TASKS))
+        RECENT_FEISHU_TASKS.pop(oldest_key, None)
 
 
 def format_cli_answer(question: str, commands: list[str], result: dict[str, Any], summary: str | None = None) -> str:
@@ -1164,7 +1205,7 @@ def format_cli_answer(question: str, commands: list[str], result: dict[str, Any]
     return "\n".join(parts).strip()
 
 
-async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
+async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str | None = None) -> str:
     if OPENBB_FAST_EQUITY_SNAPSHOT and is_equity_research_request(message):
         try:
             equity_answer = await answer_equity_snapshot(message)
@@ -1201,12 +1242,25 @@ async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
         )
         commands = extract_commands(command_text)
     if not commands:
+        if message_id:
+            remember_feishu_task(message_id, status="error", error="no_openbb_commands", ended_at=now_iso())
         return (
             "我收到了，但没能生成可执行的 OpenBB Platform CLI routine。\n"
             "这不是改走快照层；我会保持 CLI 直连模式。你可以直接发：查 AAPL 的完整公司信息、行情、估值、财务、管理层和拆股。"
         )
 
+    if message_id:
+        remember_feishu_task(message_id, status="running_cli", commands=commands, cli_started_at=now_iso())
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
+    if message_id:
+        remember_feishu_task(
+            message_id,
+            status="summarizing" if result.get("stdout") else "replying",
+            returncode=result.get("returncode"),
+            stdout_preview=(result.get("stdout") or "")[-1000:],
+            stderr_preview=(result.get("stderr") or "")[-1000:],
+            cli_finished_at=now_iso(),
+        )
     summary = ""
     if result.get("stdout"):
         summary = await call_model(
@@ -1319,12 +1373,26 @@ async def add_feishu_reaction(message_id: str, emoji_type: str = FEISHU_ACK_REAC
             raise HTTPException(status_code=502, detail=data)
 
 
-async def process_feishu_query(message_id: str, text: str) -> None:
+async def add_feishu_reaction_safely(message_id: str, emoji_type: str = FEISHU_ACK_REACTION) -> None:
     try:
-        answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS)
+        await add_feishu_reaction(message_id, emoji_type)
+        remember_feishu_task(message_id, reaction=emoji_type, reaction_at=now_iso())
+    except Exception as exc:
+        remember_feishu_task(message_id, reaction_error=f"{type(exc).__name__}: {exc}", reaction_error_at=now_iso())
+        print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
+
+
+async def process_feishu_query(message_id: str, text: str) -> None:
+    remember_feishu_task(message_id, status="running", input=text, started_at=now_iso())
+    try:
+        answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS, message_id=message_id)
     except Exception as exc:
         answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
+        remember_feishu_task(message_id, status="error", error=f"{type(exc).__name__}: {exc}", ended_at=now_iso())
+    else:
+        remember_feishu_task(message_id, status="replying", answer_preview=answer[:1000])
     await reply_feishu_message_chunks(message_id, answer)
+    remember_feishu_task(message_id, status="done", ended_at=now_iso())
 
 
 async def process_equity_card_query(message_id: str, symbol: str, sections: list[str]) -> None:
@@ -1491,6 +1559,24 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "runtime": "openbb-platform-cli"}
 
 
+@app.get("/debug/tasks")
+async def debug_tasks(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_api_token(authorization)
+    return {
+        "count": len(RECENT_FEISHU_TASKS),
+        "tasks": list(RECENT_FEISHU_TASKS.values()),
+    }
+
+
+@app.get("/debug/tasks/{message_id}")
+async def debug_task(message_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_api_token(authorization)
+    task = RECENT_FEISHU_TASKS.get(message_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
 @app.on_event("startup")
 async def startup() -> None:
     write_openbb_user_settings()
@@ -1539,10 +1625,8 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
         text = content
     text = re.sub(r"@\S+", "", text).strip()
 
-    try:
-        await add_feishu_reaction(message_id, FEISHU_OPEN_REACTION)
-    except Exception as exc:
-        print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
+    remember_feishu_task(message_id, status="queued", input=text, received_at=now_iso())
+    background_tasks.add_task(add_feishu_reaction_safely, message_id, FEISHU_OPEN_REACTION)
 
     if text:
         background_tasks.add_task(process_feishu_query, message_id, text)
