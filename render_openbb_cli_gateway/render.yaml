@@ -26,3 +26,7 @@ services:
         sync: false
       - key: FEISHU_VERIFICATION_TOKEN
         sync: false
+      - key: FEISHU_ACK_REACTION
+        value: WAVE
+      - key: FEISHU_OPEN_REACTION
+        value: WAVE

@@ -36,7 +36,7 @@ MAX_OUTPUT_CHARS = int(os.getenv("MAX_OUTPUT_CHARS", "12000"))
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_VERIFICATION_TOKEN = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-FEISHU_ACK_REACTION = os.getenv("FEISHU_ACK_REACTION", "RaiseHand")
+FEISHU_ACK_REACTION = os.getenv("FEISHU_ACK_REACTION", "WAVE")
 FEISHU_OPEN_REACTION = os.getenv("FEISHU_OPEN_REACTION", FEISHU_ACK_REACTION)
 FEISHU_RUN_REACTION = os.getenv("FEISHU_RUN_REACTION", "OnIt")
 
@@ -1409,8 +1409,12 @@ async def add_feishu_reaction_safely(message_id: str, emoji_type: str = FEISHU_A
         await add_feishu_reaction(message_id, emoji_type)
         remember_feishu_task(message_id, reaction=emoji_type, reaction_at=now_iso())
     except Exception as exc:
-        remember_feishu_task(message_id, reaction_error=f"{type(exc).__name__}: {exc}", reaction_error_at=now_iso())
-        print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
+        detail = f"{type(exc).__name__}: {exc}"
+        response = getattr(exc, "response", None)
+        if response is not None:
+            detail = f"{detail} body={response.text[:1000]}"
+        remember_feishu_task(message_id, reaction_error=detail, reaction_error_at=now_iso())
+        print(f"Failed to add Feishu reaction: {detail}", flush=True)
 
 
 async def process_openbb_task(
