@@ -235,13 +235,18 @@ def build_query_builder_card() -> dict[str, Any]:
 def build_equity_console_card() -> dict[str, Any]:
     content = (
         "**\u5168\u5e02\u573a\u80a1\u7968\u641c\u7d22**\n"
-        "\u53d1\u9001\uff1a`\u641c\u80a1\u7968 \u82f9\u679c`\u3001`\u641c\u80a1\u7968 AAPL`\u3001`\u641c\u80a1\u7968 0700`\u3001`\u641c\u80a1\u7968 Toyota`\u3002\n\n"
-        "\u6211\u4f1a\u7528 FMP \u5168\u5e02\u573a\u641c\u7d22\u8fd4\u56de\u5019\u9009\u6807\u7684\uff0c\u4f60\u70b9\u9009\u540e\uff0c\u540e\u7aef\u518d\u68c0\u6d4b\u8be5\u6807\u7684\u54ea\u4e9b\u6307\u6807\u771f\u5b9e\u53ef\u7528\u3002"
+        "\u8fd9\u91cc\u4e0d\u662f\u56fa\u5b9a\u80a1\u7968\u5217\u8868\uff0c\u800c\u662f\u5168\u5e02\u573a\u641c\u7d22\u5165\u53e3\u3002\n\n"
+        "\u8bf7\u76f4\u63a5\u5728\u804a\u5929\u6846\u53d1\u9001\uff1a\n"
+        "`\u641c\u80a1\u7968 \u4efb\u610f\u516c\u53f8\u540d/\u4ee3\u7801`\n\n"
+        "\u793a\u4f8b\uff1a\n"
+        "`\u641c\u80a1\u7968 AAPL`\n"
+        "`\u641c\u80a1\u7968 \u82f9\u679c`\n"
+        "`\u641c\u80a1\u7968 0700`\n"
+        "`\u641c\u80a1\u7968 Toyota`\n"
+        "`\u641c\u80a1\u7968 7203`\n\n"
+        "\u6211\u4f1a\u8fd4\u56de\u5019\u9009\u6807\u7684\u5361\u7247\uff0c\u4f60\u70b9\u9009\u540e\uff0c\u540e\u7aef\u518d\u68c0\u6d4b\u8be5\u6807\u7684\u54ea\u4e9b\u6307\u6807\u771f\u5b9e\u53ef\u7528\u3002"
     )
     actions = [
-        card_button("\u641c\u82f9\u679c", {"action": "quick_search", "asset": "equity", "query": "\u82f9\u679c"}, "primary"),
-        card_button("\u641c\u817e\u8baf 0700", {"action": "quick_search", "asset": "equity", "query": "0700"}),
-        card_button("\u641c Toyota", {"action": "quick_search", "asset": "equity", "query": "Toyota"}),
         card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
     ]
     return build_interactive_card("\u80a1\u7968\u67e5\u8be2", content, actions, "blue")
@@ -250,13 +255,16 @@ def build_equity_console_card() -> dict[str, Any]:
 def build_etf_console_card() -> dict[str, Any]:
     content = (
         "**ETF \u641c\u7d22**\n"
-        "\u53d1\u9001\uff1a`\u641cETF SPY`\u3001`\u641cETF QQQ`\u3001`\u641cETF VOO`\u3002\n\n"
-        "\u70b9\u9009\u5019\u9009 ETF \u540e\uff0c\u6211\u4f1a\u751f\u6210 ETF \u884c\u60c5\u6307\u4ee4\u5e76\u8fd4\u56de\u4ef7\u683c/\u5e02\u503c/\u8fd1\u4e00\u5e74\u8868\u73b0\u3002"
+        "\u8fd9\u91cc\u4e0d\u662f\u56fa\u5b9a ETF \u5217\u8868\uff0c\u800c\u662f ETF \u641c\u7d22\u5165\u53e3\u3002\n\n"
+        "\u8bf7\u76f4\u63a5\u5728\u804a\u5929\u6846\u53d1\u9001\uff1a\n"
+        "`\u641cETF \u4efb\u610f ETF \u4ee3\u7801/\u540d\u79f0`\n\n"
+        "\u793a\u4f8b\uff1a\n"
+        "`\u641cETF SPY`\n"
+        "`\u641cETF QQQ`\n"
+        "`\u641cETF VOO`\n\n"
+        "\u70b9\u9009\u5019\u9009 ETF \u540e\uff0c\u6211\u4f1a\u751f\u6210 ETF \u884c\u60c5\u6307\u4ee4\u5e76\u8fd4\u56de\u4ef7\u683c/\u8fd1\u4e00\u5e74\u8868\u73b0\u3002"
     )
     actions = [
-        card_button("\u641c SPY", {"action": "quick_search", "asset": "etf", "query": "SPY"}, "primary"),
-        card_button("\u641c QQQ", {"action": "quick_search", "asset": "etf", "query": "QQQ"}),
-        card_button("\u641c VOO", {"action": "quick_search", "asset": "etf", "query": "VOO"}),
         card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
     ]
     return build_interactive_card("ETF \u641c\u7d22", content, actions, "blue")
