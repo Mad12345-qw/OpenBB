@@ -62,6 +62,8 @@ MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "180"))
+MODEL_TRANSLATE_TIMEOUT_SECONDS = int(os.getenv("MODEL_TRANSLATE_TIMEOUT_SECONDS", "60"))
+MODEL_SUMMARY_TIMEOUT_SECONDS = int(os.getenv("MODEL_SUMMARY_TIMEOUT_SECONDS", "75"))
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
 OPENBB_OBB: Any | None = None
@@ -1448,6 +1450,28 @@ def sanitize_openbb_command(command: str) -> str:
         command,
         flags=re.IGNORECASE,
     )
+    command = re.sub(
+        r"^/equity/fundamental/company_facts\b",
+        "/equity/fundamental/filings",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if re.match(r"^/equity/fundamental/filings\b", command, flags=re.IGNORECASE):
+        if not re.search(r"--provider\s+", command, flags=re.IGNORECASE):
+            command += " --provider sec"
+        if not re.search(r"--form_type\s+", command, flags=re.IGNORECASE):
+            command += " --form_type 10-K"
+        if not re.search(r"--limit\s+", command, flags=re.IGNORECASE):
+            command += " --limit 5"
+        command = clamp_limit_option(command, 5)
+    if re.match(r"^/equity/fundamental/ratios\b", command, flags=re.IGNORECASE):
+        command = re.sub(r"(--provider\s+)(yfinance|finviz|sec)\b", r"\1fmp", command, flags=re.IGNORECASE)
+        command = clamp_limit_option(command, 5)
+    if re.match(r"^/equity/calendar/splits\b", command, flags=re.IGNORECASE):
+        if re.search(r"--provider\s+", command, flags=re.IGNORECASE):
+            command = re.sub(r"(--provider\s+)\S+", r"\1fmp", command, flags=re.IGNORECASE)
+        else:
+            command += " --provider fmp"
     if re.match(r"^/equity/fundamental/(income|balance|cash)\b", command, flags=re.IGNORECASE):
         command = re.sub(r"(--provider\s+)sec\b", r"\1yfinance", command, flags=re.IGNORECASE)
         command = clamp_limit_option(command, 5)
@@ -1477,8 +1501,30 @@ def ensure_requested_openbb_commands(message: str, commands: list[str]) -> list[
     symbol = extract_symbol(message) or symbol_from_commands(commands)
     if symbol and ("拆股" in message or "split" in lower_message):
         if not command_has_route(commands, "/equity/calendar/splits"):
-            commands.append(f"/equity/calendar/splits --symbol {symbol} --provider yfinance")
-    return commands
+            commands.append(f"/equity/calendar/splits --symbol {symbol} --provider fmp")
+    return sanitize_openbb_commands(commands)
+
+
+def default_equity_research_commands(message: str) -> list[str]:
+    symbol = extract_symbol(message)
+    if not symbol or not is_equity_research_request(message):
+        return []
+    start_date = (date.today() - timedelta(days=370)).isoformat()
+    commands = [
+        f"/equity/profile --symbol {symbol} --provider yfinance",
+        f"/equity/price/quote --symbol {symbol} --provider yfinance",
+        f"/equity/price/historical --symbol {symbol} --start_date {start_date} --interval 1d --provider yfinance",
+        f"/equity/fundamental/metrics --symbol {symbol} --provider yfinance",
+        f"/equity/fundamental/ratios --symbol {symbol} --period annual --limit 5 --provider fmp",
+        f"/equity/fundamental/income --symbol {symbol} --period annual --limit 5 --provider yfinance",
+        f"/equity/fundamental/balance --symbol {symbol} --period annual --limit 5 --provider yfinance",
+        f"/equity/fundamental/cash --symbol {symbol} --period annual --limit 5 --provider yfinance",
+        f"/equity/fundamental/income --symbol {symbol} --period quarter --limit 5 --provider yfinance",
+        f"/equity/fundamental/management --symbol {symbol} --provider fmp",
+        f"/equity/calendar/splits --symbol {symbol} --provider fmp",
+        f"/equity/fundamental/filings --symbol {symbol} --provider sec --form_type 10-K --limit 5",
+    ]
+    return ensure_requested_openbb_commands(message, commands)
 
 
 def now_iso() -> str:
@@ -1581,12 +1627,13 @@ def configured_provider_guidance() -> str:
     providers = ", ".join(sorted(set(base + configured))) or "yfinance, finviz, sec"
     return (
         f"Providers available or preferred in this deployment: {providers}. "
-        "For equity profile, quote, price history, dividends, and splits prefer yfinance or finviz. "
-        "Use fmp only for the few fundamentals or valuation fields that are not available from yfinance, finviz, or sec, and avoid generating many fmp commands in one routine because free FMP keys can rate-limit. "
+        "For equity profile, quote, price history, and dividends prefer yfinance or finviz. "
+        "Use fmp for equity ratios, management, and splits because these routes require fmp in this deployment; avoid generating extra fmp commands because free FMP keys can rate-limit. "
         "For SEC filings, company facts, annual reports, and regulatory fundamentals prefer sec. "
         "For equity income, balance, and cash statements prefer yfinance with period annual or quarter; do not use sec for these statement routes in this deployment, and keep limit <= 5. "
         "Use /equity/price/quote for equity quotes; do not use /equity/quote. "
-        "Use /equity/calendar/splits for split history. "
+        "Use /equity/calendar/splits --provider fmp for split history. "
+        "Use /equity/fundamental/filings --provider sec for SEC company filings; do not use /equity/fundamental/company_facts. "
         "For macro use fred when available. "
         "Do not use intrinio, polygon, benzinga, tradier, nasdaq, or tradingeconomics unless that provider is explicitly requested or listed as available."
     )
@@ -1725,25 +1772,35 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
         if message_id:
             remember_feishu_task(message_id, status="translating", translate_started_at=now_iso())
         print(f"OpenBB translate start message_id={message_id or '-'} text={message[:300]}", flush=True)
-        command_text = await call_model(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Convert the user request into OpenBB Platform CLI routine commands. "
-                        "Return only executable OpenBB Platform CLI routine commands, one per line. "
-                        "Use current OpenBB Platform paths and include enough commands for a complete research answer. "
-                        f"{configured_provider_guidance()} "
-                        "Do not answer from your own knowledge. Do not use FMP/Yahoo directly. "
-                        "Do not include shell commands or explanations."
-                    ),
-                },
-                {"role": "user", "content": message},
-            ],
-            max_tokens=1200,
-            purpose=f"translate:{message_id or '-'}",
-        )
-        commands = extract_commands(command_text)
+        try:
+            command_text = await call_model(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Convert the user request into OpenBB Platform CLI routine commands. "
+                            "Return only executable OpenBB Platform CLI routine commands, one per line. "
+                            "Use current OpenBB Platform paths and include enough commands for a complete research answer. "
+                            f"{configured_provider_guidance()} "
+                            "Do not answer from your own knowledge. Do not use FMP/Yahoo directly. "
+                            "Do not include shell commands or explanations."
+                        ),
+                    },
+                    {"role": "user", "content": message},
+                ],
+                max_tokens=1200,
+                purpose=f"translate:{message_id or '-'}",
+                timeout_seconds=MODEL_TRANSLATE_TIMEOUT_SECONDS,
+            )
+            commands = extract_commands(command_text)
+        except Exception as exc:
+            print(
+                f"OpenBB translate failed message_id={message_id or '-'} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            commands = default_equity_research_commands(message)
+            if not commands:
+                raise
         print(
             "OpenBB translate finished "
             f"message_id={message_id or '-'} commands={str(commands)[:1000]}",
@@ -1803,6 +1860,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                 ],
                 max_tokens=1800,
                 purpose=f"platform_summary:{message_id or '-'}",
+                timeout_seconds=MODEL_SUMMARY_TIMEOUT_SECONDS,
             )
         except httpx.TimeoutException as exc:
             print(f"OpenBB summary timed out message_id={message_id or '-'} error={type(exc).__name__}: {exc}", flush=True)
@@ -1854,6 +1912,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                 },
             ],
             max_tokens=1800,
+            timeout_seconds=MODEL_SUMMARY_TIMEOUT_SECONDS,
         )
     return format_cli_answer(message, commands, result, summary)
 
