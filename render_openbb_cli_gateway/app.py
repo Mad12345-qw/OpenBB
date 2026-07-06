@@ -1396,15 +1396,19 @@ async def call_model(
 
     timeout = timeout_seconds or MODEL_TIMEOUT_SECONDS
     print(f"Model call start purpose={purpose} timeout={timeout} max_tokens={max_tokens}", flush=True)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{MIKOTO_BASE_URL}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {MIKOTO_API_KEY}"},
-            json={
-                "model": MIKOTO_MODEL,
-                "messages": messages,
-                "max_tokens": max_tokens,
-            },
+    http_timeout = httpx.Timeout(timeout, connect=min(15, timeout), write=min(30, timeout), pool=min(15, timeout))
+    async with httpx.AsyncClient(timeout=http_timeout) as client:
+        response = await asyncio.wait_for(
+            client.post(
+                f"{MIKOTO_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {MIKOTO_API_KEY}"},
+                json={
+                    "model": MIKOTO_MODEL,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                },
+            ),
+            timeout=timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -1740,7 +1744,7 @@ def local_platform_summary(result: dict[str, Any]) -> str:
 
 
 def format_task_exception(exc: Exception) -> str:
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
         return (
             "查询过程中超时：模型翻译、模型总结或外部数据接口在限定时间内没有返回。\n"
             "后台已经记录具体阶段；如果 OpenBB 数据已经执行成功，会优先返回结构化结果，不再因为总结超时判定整次失败。"
@@ -1862,7 +1866,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                 purpose=f"platform_summary:{message_id or '-'}",
                 timeout_seconds=MODEL_SUMMARY_TIMEOUT_SECONDS,
             )
-        except httpx.TimeoutException as exc:
+        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
             print(f"OpenBB summary timed out message_id={message_id or '-'} error={type(exc).__name__}: {exc}", flush=True)
             summary = (
                 local_platform_summary(result)
