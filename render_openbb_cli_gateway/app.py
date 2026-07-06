@@ -1419,7 +1419,17 @@ def extract_commands(model_text: str) -> list[str]:
             if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
                 continue
             lines.append(line)
-    return sanitize_openbb_commands(lines[:12])
+    return sanitize_openbb_commands(lines[:16])
+
+
+def clamp_limit_option(command: str, max_limit: int) -> str:
+    def replace_limit(match: re.Match[str]) -> str:
+        value = int(match.group(2))
+        if value <= max_limit:
+            return match.group(0)
+        return f"{match.group(1)}{max_limit}"
+
+    return re.sub(r"(--limit\s+)(\d+)\b", replace_limit, command, flags=re.IGNORECASE)
 
 
 def sanitize_openbb_command(command: str) -> str:
@@ -1440,11 +1450,35 @@ def sanitize_openbb_command(command: str) -> str:
     )
     if re.match(r"^/equity/fundamental/(income|balance|cash)\b", command, flags=re.IGNORECASE):
         command = re.sub(r"(--provider\s+)sec\b", r"\1yfinance", command, flags=re.IGNORECASE)
+        command = clamp_limit_option(command, 5)
     return command
 
 
 def sanitize_openbb_commands(commands: list[str]) -> list[str]:
     return [sanitize_openbb_command(command) for command in commands]
+
+
+def command_has_route(commands: list[str], route: str) -> bool:
+    route = route.lower()
+    return any(command.split()[0].lower() == route for command in commands if command.split())
+
+
+def symbol_from_commands(commands: list[str]) -> str | None:
+    for command in commands:
+        match = re.search(r"--symbol\s+([A-Za-z0-9.\-^=]+)", command, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def ensure_requested_openbb_commands(message: str, commands: list[str]) -> list[str]:
+    commands = sanitize_openbb_commands(commands)
+    lower_message = message.lower()
+    symbol = extract_symbol(message) or symbol_from_commands(commands)
+    if symbol and ("拆股" in message or "split" in lower_message):
+        if not command_has_route(commands, "/equity/calendar/splits"):
+            commands.append(f"/equity/calendar/splits --symbol {symbol} --provider yfinance")
+    return commands
 
 
 def now_iso() -> str:
@@ -1550,7 +1584,7 @@ def configured_provider_guidance() -> str:
         "For equity profile, quote, price history, dividends, and splits prefer yfinance or finviz. "
         "Use fmp only for the few fundamentals or valuation fields that are not available from yfinance, finviz, or sec, and avoid generating many fmp commands in one routine because free FMP keys can rate-limit. "
         "For SEC filings, company facts, annual reports, and regulatory fundamentals prefer sec. "
-        "For equity income, balance, and cash statements prefer yfinance with period annual or quarter; do not use sec for these statement routes in this deployment. "
+        "For equity income, balance, and cash statements prefer yfinance with period annual or quarter; do not use sec for these statement routes in this deployment, and keep limit <= 5. "
         "Use /equity/price/quote for equity quotes; do not use /equity/quote. "
         "Use /equity/calendar/splits for split history. "
         "For macro use fred when available. "
@@ -1715,6 +1749,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
             f"message_id={message_id or '-'} commands={str(commands)[:1000]}",
             flush=True,
         )
+    commands = ensure_requested_openbb_commands(message, commands)
     if not commands:
         if message_id:
             remember_feishu_task(message_id, status="error", error="no_openbb_commands", ended_at=now_iso())
