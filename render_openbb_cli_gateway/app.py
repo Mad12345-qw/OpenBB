@@ -31,6 +31,7 @@ MAX_OUTPUT_CHARS = int(os.getenv("MAX_OUTPUT_CHARS", "12000"))
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_VERIFICATION_TOKEN = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+FEISHU_ACK_REACTION = os.getenv("FEISHU_ACK_REACTION", "OneSecond")
 
 MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
@@ -439,7 +440,7 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
             raise HTTPException(status_code=502, detail=data)
 
 
-async def add_feishu_reaction(message_id: str, emoji_type: str = "Typing") -> None:
+async def add_feishu_reaction(message_id: str, emoji_type: str = FEISHU_ACK_REACTION) -> None:
     token = await get_feishu_tenant_token()
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
@@ -512,14 +513,14 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
 
     if not text:
         try:
-            await add_feishu_reaction(message_id, "OK")
+            await add_feishu_reaction(message_id)
         except Exception as exc:
             print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
         return {"status": "empty"}
 
     if is_smalltalk_message(text):
         try:
-            await add_feishu_reaction(message_id, "OK")
+            await add_feishu_reaction(message_id)
         except Exception as exc:
             print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
         return {"status": "smalltalk_ignored"}
