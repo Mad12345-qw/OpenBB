@@ -5,7 +5,7 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
@@ -540,6 +540,80 @@ async def fetch_yahoo_chart(symbol: str) -> dict[str, Any]:
     return result
 
 
+def raw_value(value: Any) -> Any:
+    if isinstance(value, dict) and "raw" in value:
+        return value.get("raw")
+    return value
+
+
+def nested_raw(data: dict[str, Any], *path: str) -> Any:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return raw_value(current)
+
+
+async def fetch_yahoo_quote_summary(symbol: str) -> dict[str, Any]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+    }
+    modules = "price,summaryDetail,defaultKeyStatistics,financialData"
+    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
+        try:
+            await client.get("https://fc.yahoo.com")
+        except Exception:
+            pass
+        crumb_response = await client.get("https://query1.finance.yahoo.com/v1/test/getcrumb")
+        crumb_response.raise_for_status()
+        crumb = crumb_response.text.strip()
+        response = await client.get(
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+            params={"modules": modules, "crumb": crumb},
+        )
+        response.raise_for_status()
+        data = response.json()
+    result = (data.get("quoteSummary", {}).get("result") or [None])[0]
+    if not result:
+        raise HTTPException(status_code=502, detail=f"Yahoo summary returned no data for {symbol}")
+    return result
+
+
+async def fetch_yahoo_fundamentals(symbol: str) -> dict[str, list[dict[str, Any]]]:
+    types = [
+        "annualTotalRevenue",
+        "annualGrossProfit",
+        "annualOperatingIncome",
+        "annualNetIncome",
+        "trailingTotalRevenue",
+        "trailingGrossProfit",
+        "trailingOperatingIncome",
+        "trailingNetIncome",
+    ]
+    period2 = int(datetime.combine(date.today() + timedelta(days=2), time.min, tzinfo=timezone.utc).timestamp())
+    period1 = int(datetime.combine(date.today() - timedelta(days=365 * 6), time.min, tzinfo=timezone.utc).timestamp())
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+    }
+    async with httpx.AsyncClient(timeout=20, headers=headers) as client:
+        response = await client.get(
+            f"https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{symbol}",
+            params={"type": ",".join(types), "period1": str(period1), "period2": str(period2)},
+        )
+        response.raise_for_status()
+        data = response.json()
+    rows = data.get("timeseries", {}).get("result") or []
+    output: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        row_type = ((row.get("meta") or {}).get("type") or [None])[0]
+        if row_type and isinstance(row.get(row_type), list):
+            output[row_type] = row[row_type]
+    return output
+
+
 async def yahoo_price_available(symbol: str) -> bool:
     try:
         result = await fetch_yahoo_chart(symbol)
@@ -583,148 +657,73 @@ async def build_verified_metric_picker_card(symbol: str, name: str = "", asset: 
     if asset != "equity":
         return build_price_picker_card(symbol, name, asset)
 
-    today = date.today()
-    start_date = today - timedelta(days=370)
-    quote_ok, history_ok, metrics_ok, income_ok, yahoo_ok = await asyncio.gather(
-        fmp_available("quote", {"symbol": symbol}),
-        fmp_available("historical-price-eod/full", {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()}),
-        fmp_available("key-metrics-ttm", {"symbol": symbol}),
-        fmp_available("income-statement", {"symbol": symbol, "period": "annual", "limit": "5"}),
-        yahoo_price_available(symbol),
-    )
-    price_ok = (quote_ok and history_ok) or yahoo_ok
-    actions: list[dict[str, Any]] = []
-    if quote_ok and history_ok and metrics_ok and income_ok:
-        actions.append(card_button("\u5168\u91cf\u5feb\u7167", {"action": "run_equity", "symbol": symbol, "sections": ["price", "valuation", "growth", "margin"]}, "primary"))
-    if quote_ok and metrics_ok and income_ok:
-        actions.append(card_button("\u4f30\u503c+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["valuation", "margin"]}, "primary" if not actions else "default"))
-    if income_ok:
-        actions.append(card_button("\u6536\u5165\u589e\u957f+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["growth", "margin"]}, "primary" if not actions else "default"))
-    if price_ok:
-        price_action = {"action": "run_equity", "symbol": symbol, "sections": ["price"]} if quote_ok and history_ok else {"action": "run_price", "asset": "equity", "symbol": symbol}
-        actions.append(card_button("\u8fd1\u4e00\u5e74\u80a1\u4ef7", price_action, "primary" if not actions else "default"))
-    actions.append(card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}))
+    actions: list[dict[str, Any]] = [
+        card_button("\u6295\u7814\u5feb\u7167", {"action": "run_equity", "symbol": symbol, "sections": ["price", "valuation", "growth", "margin"]}, "primary"),
+        card_button("\u4f30\u503c+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["valuation", "margin"]}),
+        card_button("\u6536\u5165\u589e\u957f+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["growth", "margin"]}),
+        card_button("\u8fd1\u4e00\u5e74\u80a1\u4ef7", {"action": "run_equity", "symbol": symbol, "sections": ["price"]}),
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
+    ]
 
     display_name = f"{symbol} {name}".strip()
     content = (
         f"\u5df2\u9009\u6807\u7684\uff1a**{display_name}**\n\n"
-        "\u4e0b\u9762\u53ea\u663e\u793a\u8fd9\u4e2a\u6807\u7684\u5b9e\u65f6\u68c0\u6d4b\u540e\u53ef\u6267\u884c\u7684\u6309\u94ae\u3002"
+        "\u76f4\u63a5\u9009\u8981\u67e5\u7684\u6295\u7814\u5185\u5bb9\u3002\u540e\u7aef\u4f1a\u6309\u6570\u636e\u6e90\u9010\u9879\u515c\u5e95\uff1a"
+        "\u4ef7\u683c\u4f18\u5148 FMP\uff0c\u5931\u8d25\u5219\u7528 Yahoo Finance\uff1b\u8d22\u52a1/\u4f30\u503c\u5b57\u6bb5\u82e5\u6570\u636e\u6e90\u6ca1\u6709\uff0c\u4f1a\u5728\u7ed3\u679c\u91cc\u660e\u793a\uff0c\u4e0d\u518d\u628a\u529f\u80fd\u85cf\u6389\u3002"
     )
     return build_interactive_card("\u9009\u62e9\u67e5\u8be2\u5185\u5bb9", content, actions, "green")
 
 
 async def answer_equity_snapshot(message: str) -> str | None:
     symbol = extract_symbol(message)
-    if not symbol or not FMP_API_KEY:
+    if not symbol:
         return None
-
-    today = date.today()
-    start_date = today - timedelta(days=370)
-    print(f"Fast equity snapshot path: symbol={symbol}", flush=True)
-    async with httpx.AsyncClient(timeout=45) as client:
-        quote_task = fetch_fmp_json(client, "quote", {"symbol": symbol})
-        metrics_task = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
-        income_task = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
-        history_task = fetch_fmp_json(
-            client,
-            "historical-price-eod/full",
-            {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
-        )
-        quote, metrics, income, history = await asyncio.gather(
-            quote_task,
-            metrics_task,
-            income_task,
-            history_task,
-        )
-
-    quote_row = quote[0] if isinstance(quote, list) and quote else {}
-    metrics_row = metrics[0] if isinstance(metrics, list) and metrics else {}
-    income_rows = income if isinstance(income, list) else []
-    latest_income = income_rows[0] if income_rows else {}
-    previous_income = income_rows[1] if len(income_rows) > 1 else {}
-
-    historical = history.get("historical", []) if isinstance(history, dict) else history if isinstance(history, list) else []
-    latest_close = historical[0].get("close") if historical else quote_row.get("price")
-    first_close = historical[-1].get("close") if historical else None
-    one_year_return = None
-    if latest_close and first_close:
-        one_year_return = (float(latest_close) / float(first_close) - 1) * 100
-
-    revenue_growth = None
-    if latest_income.get("revenue") and previous_income.get("revenue"):
-        revenue_growth = (float(latest_income["revenue"]) / float(previous_income["revenue"]) - 1) * 100
-
-    pe_value = (
-        quote_row.get("pe")
-        or metrics_row.get("peRatioTTM")
-        or (1 / float(metrics_row["earningsYieldTTM"]) if metrics_row.get("earningsYieldTTM") else None)
-        or safe_ratio(quote_row.get("price"), latest_income.get("epsDiluted") or latest_income.get("eps"))
-    )
-    ps_value = metrics_row.get("priceToSalesRatioTTM") or safe_ratio(quote_row.get("marketCap"), latest_income.get("revenue"))
-    ev_ebitda_value = metrics_row.get("enterpriseValueOverEBITDATTM") or metrics_row.get("evToEBITDATTM")
-    gross_margin = latest_income.get("grossProfitRatio") or safe_ratio(latest_income.get("grossProfit"), latest_income.get("revenue"))
-    operating_margin = latest_income.get("operatingIncomeRatio") or safe_ratio(
-        latest_income.get("operatingIncome"),
-        latest_income.get("revenue"),
-    )
-    net_margin = latest_income.get("netIncomeRatio") or safe_ratio(latest_income.get("netIncome"), latest_income.get("revenue"))
-
-    company_name = quote_row.get("name") or symbol
-    lines = [
-        f"{symbol} {company_name} 投研快照",
-        "",
-        "数据源：FMP，走快速 API 路径，未走交互式 CLI。",
-        "",
-        "股价",
-        f"- 最新价格：{fmt_number(quote_row.get('price') or latest_close)}",
-        f"- 近一年涨跌幅：{fmt_percent(one_year_return)}",
-        f"- 市值：{fmt_number(quote_row.get('marketCap'))}",
-        "",
-        "估值",
-        f"- PE：{fmt_number(pe_value)}",
-        f"- PS：{fmt_number(ps_value)}",
-        f"- EV/EBITDA：{fmt_number(ev_ebitda_value)}",
-        "",
-        "收入与利润率",
-        f"- 最近年度收入：{fmt_number(latest_income.get('revenue'))}",
-        f"- 收入同比增长：{fmt_percent(revenue_growth)}",
-        f"- 毛利率：{fmt_percent(gross_margin, ratio=True)}",
-        f"- 营业利润率：{fmt_percent(operating_margin, ratio=True)}",
-        f"- 净利率：{fmt_percent(net_margin, ratio=True)}",
-        "",
-        "简评",
-        "这是一版快速数据摘要；后续可以再加同行对比、历史估值分位和图表卡片。",
-    ]
-    return "\n".join(lines)
+    return await answer_equity_snapshot_by_symbol(symbol, ["price", "valuation", "growth", "margin"])
 
 
 async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | set[str] | None = None) -> str:
     selected_sections = set(sections or ["price", "valuation", "growth", "margin"])
-    if not FMP_API_KEY:
-        raise HTTPException(status_code=500, detail="FMP_API_KEY is not configured")
-
     today = date.today()
     start_date = today - timedelta(days=370)
     symbol = symbol.upper()
     print(f"Card equity snapshot path: symbol={symbol}, sections={','.join(sorted(selected_sections))}", flush=True)
-    async with httpx.AsyncClient(timeout=45) as client:
-        needs_price = "price" in selected_sections
-        needs_valuation = "valuation" in selected_sections
-        needs_income = bool({"valuation", "growth", "margin"} & selected_sections)
-        tasks: dict[str, Any] = {}
-        if needs_price or needs_valuation:
-            tasks["quote"] = fetch_fmp_json(client, "quote", {"symbol": symbol})
-        if needs_valuation:
-            tasks["metrics"] = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
-        if needs_income:
-            tasks["income"] = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
-        if needs_price:
-            tasks["history"] = fetch_fmp_json(
-                client,
-                "historical-price-eod/full",
-                {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
-            )
-        results = dict(zip(tasks.keys(), await asyncio.gather(*tasks.values()))) if tasks else {}
+
+    needs_price = "price" in selected_sections
+    needs_valuation = "valuation" in selected_sections
+    needs_income = bool({"valuation", "growth", "margin"} & selected_sections)
+    results: dict[str, Any] = {}
+    failures: list[str] = []
+
+    async def fmp_optional(client: httpx.AsyncClient, key: str, path: str, params: dict[str, str]) -> None:
+        try:
+            results[key] = await fetch_fmp_json(client, path, params)
+        except Exception as exc:
+            failures.append(f"FMP {key}: {type(exc).__name__}")
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else ""
+            print(f"FMP optional field failed: {symbol} {key}: {type(exc).__name__} {status}", flush=True)
+
+    if FMP_API_KEY:
+        async with httpx.AsyncClient(timeout=45) as client:
+            tasks: list[Any] = []
+            if needs_price or needs_valuation:
+                tasks.append(fmp_optional(client, "quote", "quote", {"symbol": symbol}))
+            if needs_valuation:
+                tasks.append(fmp_optional(client, "metrics", "key-metrics-ttm", {"symbol": symbol}))
+            if needs_income:
+                tasks.append(fmp_optional(client, "income", "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"}))
+            if needs_price:
+                tasks.append(
+                    fmp_optional(
+                        client,
+                        "history",
+                        "historical-price-eod/full",
+                        {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
+                    )
+                )
+            if tasks:
+                await asyncio.gather(*tasks)
+    else:
+        failures.append("FMP: api key not configured")
 
     quote = results.get("quote", [])
     metrics = results.get("metrics", [])
@@ -739,39 +738,138 @@ async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | se
     historical = history.get("historical", []) if isinstance(history, dict) else history if isinstance(history, list) else []
     latest_close = historical[0].get("close") if historical else quote_row.get("price")
     first_close = historical[-1].get("close") if historical else None
+    year_high = quote_row.get("yearHigh")
+    year_low = quote_row.get("yearLow")
+    price_source = "FMP" if latest_close else ""
+    yahoo_meta: dict[str, Any] = {}
+
+    if needs_price and (not latest_close or not first_close):
+        try:
+            yahoo_result = await fetch_yahoo_chart(symbol)
+            yahoo_meta = yahoo_result.get("meta", {})
+            closes = yahoo_result.get("indicators", {}).get("quote", [{}])[0].get("close") or []
+            valid_closes = [close for close in closes if close is not None]
+            if valid_closes:
+                latest_close = yahoo_meta.get("regularMarketPrice") or valid_closes[-1]
+                first_close = first_close or valid_closes[0]
+                year_high = year_high or max(valid_closes)
+                year_low = year_low or min(valid_closes)
+                price_source = "Yahoo Finance" if not price_source else f"{price_source} + Yahoo Finance"
+            if not quote_row:
+                quote_row = {
+                    "name": yahoo_meta.get("shortName") or yahoo_meta.get("longName") or symbol,
+                    "price": latest_close,
+                    "marketCap": yahoo_meta.get("marketCap"),
+                }
+        except Exception as exc:
+            failures.append(f"Yahoo price: {type(exc).__name__}")
+            print(f"Yahoo equity fallback failed: {symbol}: {type(exc).__name__}: {exc}", flush=True)
+
+    yahoo_summary: dict[str, Any] = {}
+    yahoo_fundamentals: dict[str, list[dict[str, Any]]] = {}
+    if needs_valuation or needs_income:
+        try:
+            yahoo_summary = await fetch_yahoo_quote_summary(symbol)
+            yahoo_price = yahoo_summary.get("price", {})
+            if yahoo_price:
+                quote_row.setdefault("name", nested_raw(yahoo_summary, "price", "shortName") or nested_raw(yahoo_summary, "price", "longName"))
+                quote_row["marketCap"] = quote_row.get("marketCap") or nested_raw(yahoo_summary, "price", "marketCap")
+        except Exception as exc:
+            failures.append(f"Yahoo summary: {type(exc).__name__}")
+            print(f"Yahoo summary fallback failed: {symbol}: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            yahoo_fundamentals = await fetch_yahoo_fundamentals(symbol)
+        except Exception as exc:
+            failures.append(f"Yahoo fundamentals: {type(exc).__name__}")
+            print(f"Yahoo fundamentals fallback failed: {symbol}: {type(exc).__name__}: {exc}", flush=True)
 
     one_year_return = None
     if latest_close and first_close:
         one_year_return = (float(latest_close) / float(first_close) - 1) * 100
 
+    def series_raw(series_name: str, offset: int = -1) -> Any:
+        rows = yahoo_fundamentals.get(series_name) or []
+        if not rows:
+            return None
+        rows = sorted(rows, key=lambda row: row.get("asOfDate", ""))
+        try:
+            row = rows[offset]
+        except IndexError:
+            return None
+        reported = row.get("reportedValue") or {}
+        return reported.get("raw")
+
+    if not latest_income and yahoo_fundamentals:
+        latest_income = {
+            "revenue": series_raw("annualTotalRevenue"),
+            "grossProfit": series_raw("annualGrossProfit"),
+            "operatingIncome": series_raw("annualOperatingIncome"),
+            "netIncome": series_raw("annualNetIncome"),
+        }
+        previous_income = {
+            "revenue": series_raw("annualTotalRevenue", -2),
+        }
+
     revenue_growth = None
     if latest_income.get("revenue") and previous_income.get("revenue"):
         revenue_growth = (float(latest_income["revenue"]) / float(previous_income["revenue"]) - 1) * 100
+    elif nested_raw(yahoo_summary, "financialData", "revenueGrowth") is not None:
+        revenue_growth = float(nested_raw(yahoo_summary, "financialData", "revenueGrowth")) * 100
 
     pe_value = (
         quote_row.get("pe")
         or metrics_row.get("peRatioTTM")
+        or nested_raw(yahoo_summary, "summaryDetail", "trailingPE")
+        or nested_raw(yahoo_summary, "defaultKeyStatistics", "trailingPE")
+        or nested_raw(yahoo_summary, "summaryDetail", "forwardPE")
         or (1 / float(metrics_row["earningsYieldTTM"]) if metrics_row.get("earningsYieldTTM") else None)
         or safe_ratio(quote_row.get("price"), latest_income.get("epsDiluted") or latest_income.get("eps"))
     )
-    ps_value = metrics_row.get("priceToSalesRatioTTM") or safe_ratio(quote_row.get("marketCap"), latest_income.get("revenue"))
-    ev_ebitda_value = metrics_row.get("enterpriseValueOverEBITDATTM") or metrics_row.get("evToEBITDATTM")
-    gross_margin = latest_income.get("grossProfitRatio") or safe_ratio(latest_income.get("grossProfit"), latest_income.get("revenue"))
+    ps_value = (
+        metrics_row.get("priceToSalesRatioTTM")
+        or nested_raw(yahoo_summary, "summaryDetail", "priceToSalesTrailing12Months")
+        or nested_raw(yahoo_summary, "defaultKeyStatistics", "priceToSalesTrailing12Months")
+        or safe_ratio(quote_row.get("marketCap"), latest_income.get("revenue"))
+    )
+    ev_ebitda_value = (
+        metrics_row.get("enterpriseValueOverEBITDATTM")
+        or metrics_row.get("evToEBITDATTM")
+        or nested_raw(yahoo_summary, "defaultKeyStatistics", "enterpriseToEbitda")
+    )
+    gross_margin = (
+        latest_income.get("grossProfitRatio")
+        or nested_raw(yahoo_summary, "financialData", "grossMargins")
+        or safe_ratio(latest_income.get("grossProfit"), latest_income.get("revenue"))
+    )
     operating_margin = latest_income.get("operatingIncomeRatio") or safe_ratio(
         latest_income.get("operatingIncome"),
         latest_income.get("revenue"),
     )
-    net_margin = latest_income.get("netIncomeRatio") or safe_ratio(latest_income.get("netIncome"), latest_income.get("revenue"))
+    operating_margin = operating_margin or nested_raw(yahoo_summary, "financialData", "operatingMargins")
+    net_margin = (
+        latest_income.get("netIncomeRatio")
+        or nested_raw(yahoo_summary, "financialData", "profitMargins")
+        or safe_ratio(latest_income.get("netIncome"), latest_income.get("revenue"))
+    )
 
-    company_name = quote_row.get("name") or symbol
+    company_name = quote_row.get("name") or yahoo_meta.get("shortName") or yahoo_meta.get("longName") or symbol
     section_names = "\uff0c".join(SECTION_LABELS.get(section, section) for section in selected_sections)
+    data_sources = []
+    if any(results.get(key) for key in ("quote", "metrics", "income", "history")):
+        data_sources.append("FMP")
+    if price_source and "Yahoo Finance" in price_source:
+        data_sources.append("Yahoo Finance")
+    if yahoo_summary or yahoo_fundamentals:
+        data_sources.append("Yahoo Finance")
+    source_label = " + ".join(dict.fromkeys(data_sources)) if data_sources else "unavailable"
+
     lines = [
         f"{symbol} {company_name} \u6295\u7814\u67e5\u8be2",
         "",
-        f"\u5185\u90e8\u6307\u4ee4\uff1aEQUITY_SNAPSHOT symbol={symbol} sections={','.join(sorted(selected_sections))} provider=FMP",
+        f"\u5185\u90e8\u6307\u4ee4\uff1aEQUITY_SNAPSHOT symbol={symbol} sections={','.join(sorted(selected_sections))} provider={source_label}",
         f"\u5df2\u9009\u5185\u5bb9\uff1a{section_names}",
         "",
-        "\u6570\u636e\u6e90\uff1aFMP\uff0c\u8d70\u5feb\u901f API \u8def\u5f84\uff0c\u672a\u8d70\u4ea4\u4e92\u5f0f CLI\u3002",
+        f"\u6570\u636e\u6e90\uff1a{source_label}\uff0c\u8d70\u5feb\u901f API \u8def\u5f84\uff0c\u672a\u8d70\u4ea4\u4e92\u5f0f CLI\u3002",
         "",
     ]
     if "price" in selected_sections:
@@ -779,6 +877,8 @@ async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | se
             "\u80a1\u4ef7",
             f"- \u6700\u65b0\u4ef7\u683c\uff1a{fmt_number(quote_row.get('price') or latest_close)}",
             f"- \u8fd1\u4e00\u5e74\u6da8\u8dcc\u5e45\uff1a{fmt_percent(one_year_return)}",
+            f"- \u5e74\u5185\u9ad8\u70b9\uff1a{fmt_number(year_high)}",
+            f"- \u5e74\u5185\u4f4e\u70b9\uff1a{fmt_number(year_low)}",
             f"- \u5e02\u503c\uff1a{fmt_number(quote_row.get('marketCap'))}",
             "",
         ])
@@ -801,6 +901,22 @@ async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | se
                 f"- \u8425\u4e1a\u5229\u6da6\u7387\uff1a{fmt_percent(operating_margin, ratio=True)}",
                 f"- \u51c0\u5229\u7387\uff1a{fmt_percent(net_margin, ratio=True)}",
             ])
+        lines.append("")
+
+    lines.extend([
+        "\u6570\u636e\u5b8c\u6574\u6027",
+        f"- \u884c\u60c5\uff1a{'\u5df2\u83b7\u53d6' if latest_close else '\u672a\u83b7\u53d6'}",
+        f"- \u4f30\u503c\uff1a{'\u5df2\u83b7\u53d6' if (pe_value or ps_value or ev_ebitda_value) else '\u672a\u83b7\u53d6'}",
+        f"- \u6536\u5165/\u5229\u6da6\u7387\uff1a{'\u5df2\u83b7\u53d6' if latest_income else '\u672a\u83b7\u53d6'}",
+    ])
+    if failures:
+        lines.append(f"- \u5931\u8d25\u515c\u5e95\uff1a{'; '.join(dict.fromkeys(failures[:4]))}")
+
+    lines.extend([
+        "",
+        "\u7b80\u8bc4",
+        "\u8fd9\u662f\u6570\u636e\u5e95\u5ea7\u5feb\u7167\uff1a\u5148\u7ed9\u4f60\u53ef\u7528\u6570\u636e\uff0c\u518d\u628a\u7f3a\u5931\u5b57\u6bb5\u660e\u786e\u6807\u51fa\u3002\u4e0b\u4e00\u6b65\u53ef\u7ee7\u7eed\u52a0\u5165\u540c\u884c\u5bf9\u6bd4\u3001\u5386\u53f2\u4f30\u503c\u5206\u4f4d\u548c\u56fe\u8868\u5361\u7247\u3002",
+    ])
 
     return "\n".join(lines).strip()
 
@@ -826,7 +942,8 @@ async def answer_price_snapshot(symbol: str, asset: str = "instrument") -> str:
         latest_close = historical[0].get("close") if historical else quote_row.get("price")
         first_close = historical[-1].get("close") if historical else None
     except Exception as exc:
-        print(f"FMP price snapshot failed, falling back to Yahoo: {symbol}: {type(exc).__name__}: {exc}", flush=True)
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else ""
+        print(f"FMP price snapshot failed, falling back to Yahoo: {symbol}: {type(exc).__name__} {status}", flush=True)
         try:
             source = "Yahoo Finance"
             result = await fetch_yahoo_chart(symbol)
@@ -843,14 +960,16 @@ async def answer_price_snapshot(symbol: str, asset: str = "instrument") -> str:
                 "marketCap": None,
             }
         except Exception as yahoo_exc:
-            print(f"Yahoo price snapshot failed, falling back to FMP quote only: {symbol}: {type(yahoo_exc).__name__}: {yahoo_exc}", flush=True)
+            status = yahoo_exc.response.status_code if isinstance(yahoo_exc, httpx.HTTPStatusError) else ""
+            print(f"Yahoo price snapshot failed, falling back to FMP quote only: {symbol}: {type(yahoo_exc).__name__} {status}", flush=True)
             source = "FMP quote"
             try:
                 async with httpx.AsyncClient(timeout=20) as client:
                     quote = await fetch_fmp_json(client, "quote", {"symbol": symbol})
                 quote_row = quote[0] if isinstance(quote, list) and quote else {}
             except Exception as quote_exc:
-                print(f"FMP quote-only fallback failed: {symbol}: {type(quote_exc).__name__}: {quote_exc}", flush=True)
+                status = quote_exc.response.status_code if isinstance(quote_exc, httpx.HTTPStatusError) else ""
+                print(f"FMP quote-only fallback failed: {symbol}: {type(quote_exc).__name__} {status}", flush=True)
                 source = "unavailable"
                 quote_row = {"name": symbol, "price": None, "yearHigh": None, "yearLow": None, "marketCap": None}
             latest_close = quote_row.get("price")
