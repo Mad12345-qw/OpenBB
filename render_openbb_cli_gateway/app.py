@@ -19,6 +19,7 @@ SEEN_FEISHU_CARD_ACTION_IDS: set[str] = set()
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
 OPENBB_TIMEOUT_SECONDS = int(os.getenv("OPENBB_TIMEOUT_SECONDS", "120"))
+OPENBB_FAST_EQUITY_SNAPSHOT = os.getenv("OPENBB_FAST_EQUITY_SNAPSHOT", "0").strip().lower() in {"1", "true", "yes", "on"}
 OPENBB_ALLOWED_PREFIXES = tuple(
     prefix.strip()
     for prefix in os.getenv(
@@ -27,6 +28,7 @@ OPENBB_ALLOWED_PREFIXES = tuple(
     ).split(",")
     if prefix.strip()
 )
+OPENBB_REQUIRE_ALLOWED_PREFIX = os.getenv("OPENBB_REQUIRE_ALLOWED_PREFIX", "0").strip().lower() in {"1", "true", "yes", "on"}
 MAX_OUTPUT_CHARS = int(os.getenv("MAX_OUTPUT_CHARS", "12000"))
 
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
@@ -248,18 +250,16 @@ def build_interactive_card(title: str, content: str, actions: list[dict[str, Any
 
 def build_query_builder_card() -> dict[str, Any]:
     content = (
-        "**OpenBB Platform \u6295\u7814\u603b\u63a7\u53f0**\n"
-        "\u8fd9\u4e2a\u5361\u7247\u662f OpenBB \u6307\u4ee4\u6784\u5efa\u5668\uff1a\u5148\u9009\u6570\u636e\u7c7b\u578b\uff0c\u518d\u9009\u6807\u7684/\u6307\u6807\uff0c\u6700\u540e\u751f\u6210\u53ef\u6267\u884c\u6307\u4ee4\u3002\n\n"
-        "\u5df2\u9a8c\u8bc1\u5e76\u63a5\u5165\uff1a\u5168\u5e02\u573a\u80a1\u7968\u641c\u7d22\u3001ETF \u641c\u7d22\u3001\u6307\u6570\u884c\u60c5\u3001FRED \u5b8f\u89c2\u3001\u52a0\u5bc6\u884c\u60c5\u3002"
+        "**OpenBB Platform CLI \u76f4\u8fde\u6a21\u5f0f**\n"
+        "\u73b0\u5728\u98de\u4e66\u53ea\u505a\u4fe1\u606f\u4f20\u9012\uff1a\u4f60\u76f4\u63a5\u8bf4\u8981\u67e5\u4ec0\u4e48\uff0c"
+        "\u540e\u7aef\u4f1a\u628a\u8bf7\u6c42\u8f6c\u6210 OpenBB Platform CLI routine\uff0c\u5728 Render \u4e0a\u7528\u5b8c\u6574 CLI \u6267\u884c\uff0c\u7136\u540e\u628a CLI \u7ed3\u679c\u56de\u5230\u98de\u4e66\u3002\n\n"
+        "\u4e0d\u518d\u7528\u81ea\u5b9a\u4e49 FMP/Yahoo \u5feb\u7167\u66ff\u4ee3 OpenBB CLI\u3002"
     )
     actions = [
-        card_button("\u80a1\u7968\u641c\u7d22", {"action": "asset", "asset": "equity"}, "primary"),
-        card_button("ETF \u641c\u7d22", {"action": "asset", "asset": "etf"}),
-        card_button("\u6307\u6570", {"action": "asset", "asset": "index"}),
-        card_button("\u5b8f\u89c2", {"action": "asset", "asset": "macro"}),
-        card_button("\u52a0\u5bc6", {"action": "asset", "asset": "crypto"}),
+        card_button("AAPL \u5b8c\u6574\u516c\u53f8\u4fe1\u606f", {"action": "cli_query", "query": "\u67e5 AAPL \u7684\u516c\u53f8\u6982\u51b5\u3001\u884c\u60c5\u3001\u4f30\u503c\u3001\u8d22\u52a1\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u3001\u7ba1\u7406\u5c42\u548c\u62c6\u80a1"}, "primary"),
+        card_button("\u817e\u8baf\u5b8c\u6574\u516c\u53f8\u4fe1\u606f", {"action": "cli_query", "query": "\u67e5 0700.HK \u7684\u516c\u53f8\u6982\u51b5\u3001\u884c\u60c5\u3001\u4f30\u503c\u3001\u8d22\u52a1\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u3001\u7ba1\u7406\u5c42\u548c\u62c6\u80a1"}),
     ]
-    return build_interactive_card("OpenBB \u6295\u7814\u603b\u63a7\u53f0", content, actions)
+    return build_interactive_card("OpenBB CLI \u76f4\u8fde", content, actions)
 
 
 def build_equity_console_card() -> dict[str, Any]:
@@ -1062,7 +1062,9 @@ def normalize_routine(payload: RoutineRequest) -> str:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if not line.startswith(OPENBB_ALLOWED_PREFIXES):
+        if not line.startswith("/"):
+            raise HTTPException(status_code=400, detail=f"OpenBB CLI command must start with /: {line}")
+        if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(OPENBB_ALLOWED_PREFIXES):
             raise HTTPException(status_code=400, detail=f"Command is not allow-listed: {line}")
         cleaned.append(line)
 
@@ -1126,16 +1128,45 @@ def extract_commands(model_text: str) -> list[str]:
     lines = []
     for raw_line in model_text.splitlines():
         line = raw_line.strip().strip("`")
-        if line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
+        if line.startswith("/") and (not OPENBB_REQUIRE_ALLOWED_PREFIX or line.startswith(tuple(OPENBB_ALLOWED_PREFIXES))):
             lines.append(line)
-    return lines[:5]
+    return lines[:12]
+
+
+def commands_from_user_message(message: str) -> list[str]:
+    lines = []
+    for raw_line in message.splitlines():
+        line = raw_line.strip()
+        if line.startswith("/") and (not OPENBB_REQUIRE_ALLOWED_PREFIX or line.startswith(tuple(OPENBB_ALLOWED_PREFIXES))):
+            lines.append(line)
+    return lines
+
+
+def format_cli_answer(question: str, commands: list[str], result: dict[str, Any], summary: str | None = None) -> str:
+    parts = [
+        "OpenBB Platform CLI 执行结果",
+        "",
+        "实际执行的 CLI routine：",
+        "```text",
+        "\n".join(commands),
+        "```",
+        "",
+        f"退出码：{result['returncode']}",
+    ]
+    if summary:
+        parts.extend(["", "整理结果：", summary.strip()])
+    if result.get("stdout"):
+        parts.extend(["", "CLI 原始输出：", "```text", result["stdout"].strip(), "```"])
+    if result.get("stderr"):
+        parts.extend(["", "CLI 错误输出：", "```text", result["stderr"].strip(), "```"])
+    return "\n".join(parts).strip()
 
 
 async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
     if is_template_menu_request(message):
         return build_template_menu()
 
-    if is_equity_research_request(message):
+    if OPENBB_FAST_EQUITY_SNAPSHOT and is_equity_research_request(message):
         try:
             equity_answer = await answer_equity_snapshot(message)
             if equity_answer:
@@ -1151,51 +1182,60 @@ async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
             return f"股票快照查询失败：{type(exc).__name__}: {exc}"
         return "股票快照查询失败：没有识别到可用股票代码或 FMP_API_KEY 未配置。"
 
-    command_text = await call_model(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Convert the user request into OpenBB Platform CLI routine commands. "
-                    "Return only commands, one per line. Use current OpenBB Platform paths. "
-                    "Do not include shell commands or explanations."
-                ),
-            },
-            {"role": "user", "content": message},
-        ],
-        max_tokens=600,
-    )
-    commands = extract_commands(command_text)
+    commands = commands_from_user_message(message)
+    if not commands:
+        command_text = await call_model(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Convert the user request into OpenBB Platform CLI routine commands. "
+                        "Return only executable OpenBB Platform CLI routine commands, one per line. "
+                        "Use current OpenBB Platform paths and include enough commands for a complete research answer. "
+                        "Do not answer from your own knowledge. Do not use FMP/Yahoo directly. "
+                        "Do not include shell commands or explanations."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            max_tokens=1200,
+        )
+        commands = extract_commands(command_text)
     if not commands:
         return (
-            "我收到了，但这句话没有被识别成可执行的 OpenBB 数据查询。\n"
-            "可以这样问：查 AAPL 的估值、收入增长、利润率和最近一年股价。"
+            "我收到了，但没能生成可执行的 OpenBB Platform CLI routine。\n"
+            "这不是改走快照层；我会保持 CLI 直连模式。你可以直接发：查 AAPL 的完整公司信息、行情、估值、财务、管理层和拆股。"
         )
 
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
-    summary = await call_model(
-        [
-            {
-                "role": "system",
-                "content": "Summarize the OpenBB CLI output for an investment research chat. Be concise.",
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "question": message,
-                        "commands": commands,
-                        "returncode": result["returncode"],
-                        "stdout": result["stdout"],
-                        "stderr": result["stderr"],
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ],
-        max_tokens=1200,
-    )
-    return summary
+    summary = ""
+    if result.get("stdout"):
+        summary = await call_model(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize the OpenBB Platform CLI output for an investment research chat. "
+                        "Preserve all important available fields. If data is missing, say it is missing from CLI output."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": message,
+                            "commands": commands,
+                            "returncode": result["returncode"],
+                            "stdout": result["stdout"],
+                            "stderr": result["stderr"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            max_tokens=1800,
+        )
+    return format_cli_answer(message, commands, result, summary)
 
 
 async def get_feishu_tenant_token() -> str:
@@ -1225,6 +1265,31 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
         data = response.json()
         if data.get("code") != 0:
             raise HTTPException(status_code=502, detail=data)
+
+
+def split_feishu_text(text: str, limit: int = 2800) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    return chunks
+
+
+async def reply_feishu_message_chunks(message_id: str, text: str) -> None:
+    chunks = split_feishu_text(text)
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        prefix = f"({idx}/{total})\n" if total > 1 else ""
+        await reply_feishu_message(message_id, prefix + chunk)
 
 
 async def reply_feishu_card(message_id: str, card: dict[str, Any]) -> None:
@@ -1260,7 +1325,7 @@ async def process_feishu_query(message_id: str, text: str) -> None:
         answer = await answer_with_openbb(text, OPENBB_TIMEOUT_SECONDS)
     except Exception as exc:
         answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
-    await reply_feishu_message(message_id, answer[:3000])
+    await reply_feishu_message_chunks(message_id, answer)
 
 
 async def process_equity_card_query(message_id: str, symbol: str, sections: list[str]) -> None:
@@ -1347,6 +1412,13 @@ async def handle_feishu_card_action(body: dict[str, Any], background_tasks: Back
         await reply_feishu_card(message_id, build_query_builder_card())
         return {"toast": {"type": "success", "content": "\u5df2\u8fd4\u56de\u603b\u63a7\u53f0"}}
 
+    if action == "cli_query":
+        query = str(action_value.get("query", "")).strip()
+        if not query:
+            return {"toast": {"type": "warning", "content": "\u672a\u627e\u5230\u8981\u4f20\u7ed9 CLI \u7684\u67e5\u8be2"}}
+        background_tasks.add_task(process_feishu_query, message_id, query)
+        return {"toast": {"type": "success", "content": "\u5df2\u4ea4\u7ed9 OpenBB CLI \u6267\u884c"}}
+
     if action == "asset":
         asset = str(action_value.get("asset", ""))
         if asset == "equity":
@@ -1379,8 +1451,10 @@ async def handle_feishu_card_action(body: dict[str, Any], background_tasks: Back
         name = str(action_value.get("name", ""))
         if not symbol:
             return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
-        await reply_feishu_card(message_id, await build_verified_metric_picker_card(symbol, name, asset))
-        return {"toast": {"type": "success", "content": f"\u5df2\u9009 {symbol}"}}
+        label = f"{symbol} {name}".strip()
+        query = f"\u67e5 {label} \u7684\u516c\u53f8\u6982\u51b5\u3001\u884c\u60c5\u3001\u4f30\u503c\u3001\u8d22\u52a1\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u3001\u7ba1\u7406\u5c42\u548c\u62c6\u80a1"
+        background_tasks.add_task(process_feishu_query, message_id, query)
+        return {"toast": {"type": "success", "content": f"\u5df2\u4ea4\u7ed9 OpenBB CLI\uff1a{symbol}"}}
 
     if action == "run_equity":
         symbol = str(action_value.get("symbol", "")).upper()
@@ -1389,24 +1463,26 @@ async def handle_feishu_card_action(body: dict[str, Any], background_tasks: Back
             return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
         if not isinstance(sections, list):
             sections = ["price", "valuation", "growth", "margin"]
-        background_tasks.add_task(process_equity_card_query, message_id, symbol, sections)
-        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+        query = f"\u67e5 {symbol} \u7684\u4f30\u503c\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u548c\u6700\u8fd1\u4e00\u5e74\u80a1\u4ef7"
+        background_tasks.add_task(process_feishu_query, message_id, query)
+        return {"toast": {"type": "success", "content": "\u5df2\u4ea4\u7ed9 OpenBB CLI \u6267\u884c"}}
 
     if action == "run_price":
         symbol = str(action_value.get("symbol", "")).upper()
         asset = str(action_value.get("asset", "instrument"))
         if not symbol:
             return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
-        background_tasks.add_task(process_price_card_query, message_id, symbol, asset)
-        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+        query = f"\u67e5 {symbol} \u7684\u884c\u60c5\u548c\u6700\u8fd1\u4e00\u5e74\u4ef7\u683c\u8868\u73b0"
+        background_tasks.add_task(process_feishu_query, message_id, query)
+        return {"toast": {"type": "success", "content": "\u5df2\u4ea4\u7ed9 OpenBB CLI \u6267\u884c"}}
 
     if action == "run_macro":
         series_id = str(action_value.get("series_id", ""))
         name = str(action_value.get("name", series_id))
         if not series_id:
             return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u5b8f\u89c2\u6307\u6807"}}
-        background_tasks.add_task(process_macro_card_query, message_id, series_id, name)
-        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+        background_tasks.add_task(process_feishu_query, message_id, f"\u67e5 {series_id} {name} \u7684\u5b8f\u89c2\u6570\u636e")
+        return {"toast": {"type": "success", "content": "\u5df2\u4ea4\u7ed9 OpenBB CLI \u6267\u884c"}}
 
     return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u7684\u5361\u7247\u64cd\u4f5c"}}
 
@@ -1469,18 +1545,9 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     except Exception as exc:
         print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
 
-    search_command = parse_search_command(text)
-    if search_command:
-        asset, query = search_command
-        print(f"Parsed Feishu search command: asset={asset} query={query}", flush=True)
-        candidates = await search_fmp_candidates(query, asset)
-        if not candidates:
-            candidates = search_ticker_candidates(query)
-        if candidates:
-            await reply_feishu_card(message_id, build_symbol_candidates_card(query, candidates, asset))
-            return {"status": "candidate_card_sent"}
-        await reply_feishu_card(message_id, build_search_empty_card(query, asset))
-        return {"status": "search_empty_card_sent"}
+    if text:
+        background_tasks.add_task(process_feishu_query, message_id, text)
+        return {"status": "openbb_cli_task_started"}
 
     await reply_feishu_card(message_id, build_query_builder_card())
     return {"status": "console_card_sent"}

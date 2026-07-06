@@ -11,7 +11,7 @@ services:
       - key: API_TOKEN
         generateValue: true
       - key: OPENBB_TIMEOUT_SECONDS
-        value: "120"
+        value: "300"
       - key: OPENBB_ALLOWED_PREFIXES
         value: /equity,/economy,/index,/crypto,/etf,/currency,/commodity,/fixedincome,/derivatives,/news,/technical
       - key: MIKOTO_BASE_URL
