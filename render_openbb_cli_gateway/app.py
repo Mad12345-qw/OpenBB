@@ -1207,8 +1207,9 @@ def configured_provider_guidance() -> str:
     providers = ", ".join(sorted(set(base + configured))) or "yfinance, finviz, sec"
     return (
         f"Providers available or preferred in this deployment: {providers}. "
-        "For equity price/history prefer yfinance. "
-        "For equity profile, valuation, financial statements, ratios, management, dividends, and splits prefer fmp when available; otherwise use finviz, yfinance, or sec where applicable. "
+        "For equity profile, quote, price history, dividends, and splits prefer yfinance or finviz. "
+        "Use fmp only for the few fundamentals or valuation fields that are not available from yfinance, finviz, or sec, and avoid generating many fmp commands in one routine because free FMP keys can rate-limit. "
+        "For SEC filings, company facts, annual reports, and regulatory fundamentals prefer sec. "
         "For macro use fred when available. "
         "Do not use intrinio, polygon, benzinga, tradier, nasdaq, or tradingeconomics unless that provider is explicitly requested or listed as available."
     )
