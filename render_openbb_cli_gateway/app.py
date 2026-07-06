@@ -64,6 +64,25 @@ SECTION_LABELS = {
     "margin": "\u5229\u6da6\u7387",
 }
 
+INDEX_DIRECTORY = [
+    {"symbol": "^GSPC", "name": "S&P 500"},
+    {"symbol": "^IXIC", "name": "NASDAQ Composite"},
+    {"symbol": "^DJI", "name": "Dow Jones Industrial Average"},
+]
+
+CRYPTO_DIRECTORY = [
+    {"symbol": "BTCUSD", "name": "Bitcoin USD"},
+    {"symbol": "ETHUSD", "name": "Ethereum USD"},
+]
+
+FRED_SERIES = [
+    {"series_id": "GDP", "name": "US GDP"},
+    {"series_id": "CPIAUCSL", "name": "US CPI"},
+    {"series_id": "UNRATE", "name": "US Unemployment Rate"},
+    {"series_id": "FEDFUNDS", "name": "Federal Funds Rate"},
+    {"series_id": "DGS10", "name": "10-Year Treasury Yield"},
+]
+
 OPENBB_CREDENTIAL_ENV = {
     "fmp_api_key": "FMP_API_KEY",
     "polygon_api_key": "POLYGON_API_KEY",
@@ -200,32 +219,47 @@ def build_interactive_card(title: str, content: str, actions: list[dict[str, Any
 def build_query_builder_card() -> dict[str, Any]:
     content = (
         "**OpenBB Platform \u6295\u7814\u603b\u63a7\u53f0**\n"
-        "\u4e0b\u9762\u53ea\u653e\u5df2\u9a8c\u8bc1\u53ef\u6267\u884c\u7684\u529f\u80fd\u3002\u70b9\u9009\u540e\uff0c\u540e\u7aef\u4f1a\u751f\u6210\u7ed3\u6784\u5316\u6307\u4ee4\u5e76\u8c03\u7528\u6570\u636e\u6e90\u3002\n\n"
-        "\u5df2\u9a8c\u8bc1\uff1a\u7f8e\u80a1\u6295\u7814\u5feb\u7167\uff08FMP\uff09\u3002\n"
-        "\u5f85\u63a5\u5165\uff1aETF\u3001\u6307\u6570\u3001\u5b8f\u89c2\u3001\u5916\u6c47\u3001\u52a0\u5bc6\u3001\u5927\u5b97\u5546\u54c1\u3001\u65b0\u95fb\u3002"
+        "\u8fd9\u4e2a\u5361\u7247\u662f OpenBB \u6307\u4ee4\u6784\u5efa\u5668\uff1a\u5148\u9009\u6570\u636e\u7c7b\u578b\uff0c\u518d\u9009\u6807\u7684/\u6307\u6807\uff0c\u6700\u540e\u751f\u6210\u53ef\u6267\u884c\u6307\u4ee4\u3002\n\n"
+        "\u5df2\u9a8c\u8bc1\u5e76\u63a5\u5165\uff1a\u5168\u5e02\u573a\u80a1\u7968\u641c\u7d22\u3001ETF \u641c\u7d22\u3001\u6307\u6570\u884c\u60c5\u3001FRED \u5b8f\u89c2\u3001\u52a0\u5bc6\u884c\u60c5\u3002"
     )
     actions = [
-        card_button("\u80a1\u7968\uff08\u5df2\u9a8c\u8bc1\uff09", {"action": "asset", "asset": "equity"}, "primary"),
+        card_button("\u80a1\u7968\u641c\u7d22", {"action": "asset", "asset": "equity"}, "primary"),
+        card_button("ETF \u641c\u7d22", {"action": "asset", "asset": "etf"}),
+        card_button("\u6307\u6570", {"action": "asset", "asset": "index"}),
+        card_button("\u5b8f\u89c2", {"action": "asset", "asset": "macro"}),
+        card_button("\u52a0\u5bc6", {"action": "asset", "asset": "crypto"}),
     ]
     return build_interactive_card("OpenBB \u6295\u7814\u603b\u63a7\u53f0", content, actions)
 
 
 def build_equity_console_card() -> dict[str, Any]:
     content = (
-        "**\u80a1\u7968\u67e5\u8be2**\n"
-        "\u5148\u9009\u6807\u7684\uff0c\u518d\u9009\u4f60\u8981\u7684\u529f\u80fd/\u6307\u6807\u3002\n\n"
-        "\u5982\u679c\u5019\u9009\u91cc\u6ca1\u6709\uff0c\u4f60\u4e5f\u53ef\u4ee5\u76f4\u63a5\u53d1\uff1a`\u9009\u80a1 \u82f9\u679c`\u3001`\u9009\u80a1 NVDA`\u3002"
+        "**\u5168\u5e02\u573a\u80a1\u7968\u641c\u7d22**\n"
+        "\u53d1\u9001\uff1a`\u641c\u80a1\u7968 \u82f9\u679c`\u3001`\u641c\u80a1\u7968 AAPL`\u3001`\u641c\u80a1\u7968 0700`\u3001`\u641c\u80a1\u7968 Toyota`\u3002\n\n"
+        "\u6211\u4f1a\u7528 FMP \u5168\u5e02\u573a\u641c\u7d22\u8fd4\u56de\u5019\u9009\u6807\u7684\uff0c\u4f60\u70b9\u9009\u540e\uff0c\u540e\u7aef\u518d\u68c0\u6d4b\u8be5\u6807\u7684\u54ea\u4e9b\u6307\u6807\u771f\u5b9e\u53ef\u7528\u3002"
     )
     actions = [
-        card_button("\u82f9\u679c AAPL", {"action": "select_symbol", "symbol": "AAPL", "name": "Apple Inc."}, "primary"),
-        card_button("\u82f1\u4f1f\u8fbe NVDA", {"action": "select_symbol", "symbol": "NVDA", "name": "NVIDIA Corporation"}),
-        card_button("\u5fae\u8f6f MSFT", {"action": "select_symbol", "symbol": "MSFT", "name": "Microsoft Corporation"}),
-        card_button("\u8c37\u6b4c GOOGL", {"action": "select_symbol", "symbol": "GOOGL", "name": "Alphabet Inc. Class A"}),
-        card_button("\u7279\u65af\u62c9 TSLA", {"action": "select_symbol", "symbol": "TSLA", "name": "Tesla Inc."}),
-        card_button("\u4e9a\u9a6c\u900a AMZN", {"action": "select_symbol", "symbol": "AMZN", "name": "Amazon.com Inc."}),
+        card_button("\u641c\u82f9\u679c", {"action": "quick_search", "asset": "equity", "query": "\u82f9\u679c"}, "primary"),
+        card_button("\u641c\u817e\u8baf 0700", {"action": "quick_search", "asset": "equity", "query": "0700"}),
+        card_button("\u641c Toyota", {"action": "quick_search", "asset": "equity", "query": "Toyota"}),
         card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
     ]
     return build_interactive_card("\u80a1\u7968\u67e5\u8be2", content, actions, "blue")
+
+
+def build_etf_console_card() -> dict[str, Any]:
+    content = (
+        "**ETF \u641c\u7d22**\n"
+        "\u53d1\u9001\uff1a`\u641cETF SPY`\u3001`\u641cETF QQQ`\u3001`\u641cETF VOO`\u3002\n\n"
+        "\u70b9\u9009\u5019\u9009 ETF \u540e\uff0c\u6211\u4f1a\u751f\u6210 ETF \u884c\u60c5\u6307\u4ee4\u5e76\u8fd4\u56de\u4ef7\u683c/\u5e02\u503c/\u8fd1\u4e00\u5e74\u8868\u73b0\u3002"
+    )
+    actions = [
+        card_button("\u641c SPY", {"action": "quick_search", "asset": "etf", "query": "SPY"}, "primary"),
+        card_button("\u641c QQQ", {"action": "quick_search", "asset": "etf", "query": "QQQ"}),
+        card_button("\u641c VOO", {"action": "quick_search", "asset": "etf", "query": "VOO"}),
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
+    ]
+    return build_interactive_card("ETF \u641c\u7d22", content, actions, "blue")
 
 
 def build_asset_coming_card(asset: str) -> dict[str, Any]:
@@ -252,15 +286,15 @@ def build_asset_coming_card(asset: str) -> dict[str, Any]:
     return build_interactive_card(f"{label} \u6a21\u5757", content, actions, "purple")
 
 
-def build_symbol_candidates_card(query: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def build_symbol_candidates_card(query: str, candidates: list[dict[str, Any]], asset: str = "equity") -> dict[str, Any]:
     content = (
         f"\u641c\u7d22\uff1a`{query}`\n"
         "\u8bf7\u9009\u62e9\u6b63\u786e\u6807\u7684\uff0c\u4e0b\u4e00\u6b65\u518d\u9009\u8981\u67e5\u7684\u529f\u80fd\u548c\u6307\u6807\u3002"
     )
     actions = [
         card_button(
-            f"{item['symbol']} {item['name'][:20]}",
-            {"action": "select_symbol", "symbol": item["symbol"], "name": item["name"]},
+            f"{item['symbol']} {item.get('exchange', '')} {item['name'][:18]}",
+            {"action": "select_symbol", "asset": asset, "symbol": item["symbol"], "name": item["name"]},
             "primary" if idx == 0 else "default",
         )
         for idx, item in enumerate(candidates)
@@ -295,6 +329,51 @@ def build_metric_picker_card(symbol: str, name: str = "") -> dict[str, Any]:
         ),
     ]
     return build_interactive_card("\u9009\u62e9\u67e5\u8be2\u5185\u5bb9", content, actions, "green")
+
+
+def build_price_picker_card(symbol: str, name: str = "", asset: str = "instrument") -> dict[str, Any]:
+    display_name = f"{symbol} {name}".strip()
+    content = (
+        f"\u5df2\u9009\u6807\u7684\uff1a**{display_name}**\n\n"
+        "\u8be5\u6807\u7684\u5df2\u9a8c\u8bc1\u53ef\u7528\u529f\u80fd\uff1a\u884c\u60c5/\u8fd1\u4e00\u5e74\u8868\u73b0\u3002\n"
+        f"`PRICE_SNAPSHOT asset={asset} symbol={symbol} provider=FMP`"
+    )
+    actions = [
+        card_button(
+            "\u884c\u60c5\u5feb\u7167",
+            {"action": "run_price", "asset": asset, "symbol": symbol},
+            "primary",
+        ),
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
+    ]
+    return build_interactive_card("\u9009\u62e9\u67e5\u8be2\u5185\u5bb9", content, actions, "green")
+
+
+def build_index_card() -> dict[str, Any]:
+    actions = [
+        card_button(item["name"], {"action": "run_price", "asset": "index", "symbol": item["symbol"]}, "primary" if idx == 0 else "default")
+        for idx, item in enumerate(INDEX_DIRECTORY)
+    ]
+    actions.append(card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}))
+    return build_interactive_card("\u6307\u6570\u884c\u60c5", "\u9009\u62e9\u8981\u67e5\u7684\u6307\u6570\uff1a", actions, "blue")
+
+
+def build_crypto_card() -> dict[str, Any]:
+    actions = [
+        card_button(item["name"], {"action": "run_price", "asset": "crypto", "symbol": item["symbol"]}, "primary" if idx == 0 else "default")
+        for idx, item in enumerate(CRYPTO_DIRECTORY)
+    ]
+    actions.append(card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}))
+    return build_interactive_card("\u52a0\u5bc6\u884c\u60c5", "\u9009\u62e9\u8981\u67e5\u7684\u52a0\u5bc6\u8d44\u4ea7\uff1a", actions, "blue")
+
+
+def build_macro_card() -> dict[str, Any]:
+    actions = [
+        card_button(item["name"], {"action": "run_macro", "series_id": item["series_id"], "name": item["name"]}, "primary" if idx == 0 else "default")
+        for idx, item in enumerate(FRED_SERIES)
+    ]
+    actions.append(card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}))
+    return build_interactive_card("\u5b8f\u89c2\u6570\u636e", "\u9009\u62e9 FRED \u5b8f\u89c2\u6307\u6807\uff1a", actions, "blue")
 
 
 def is_equity_research_request(message: str) -> bool:
@@ -383,6 +462,91 @@ async def fetch_fmp_json(client: httpx.AsyncClient, path: str, params: dict[str,
     response = await client.get(f"https://financialmodelingprep.com/stable/{path}", params=request_params)
     response.raise_for_status()
     return response.json()
+
+
+async def fetch_yahoo_chart(symbol: str) -> dict[str, Any]:
+    url_symbol = symbol.replace("^", "%5E")
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{url_symbol}", params={"range": "1y", "interval": "1d"})
+        response.raise_for_status()
+        data = response.json()
+    result = (data.get("chart", {}).get("result") or [None])[0]
+    if not result:
+        raise HTTPException(status_code=502, detail=f"Yahoo chart returned no data for {symbol}")
+    return result
+
+
+async def yahoo_price_available(symbol: str) -> bool:
+    try:
+        result = await fetch_yahoo_chart(symbol)
+        return bool(result.get("timestamp"))
+    except Exception as exc:
+        print(f"Yahoo price unavailable: {symbol}: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+
+async def search_fmp_candidates(query: str, asset: str = "equity", limit: int = 8) -> list[dict[str, Any]]:
+    if not FMP_API_KEY:
+        return []
+    query = query.strip()
+    if not query:
+        return []
+    async with httpx.AsyncClient(timeout=20) as client:
+        endpoint = "search-symbol" if re.search(r"[0-9.^]", query) or (query == query.upper() and re.fullmatch(r"[A-Z.\-]{1,12}", query)) else "search-name"
+        try:
+            rows = await fetch_fmp_json(client, endpoint, {"query": query})
+        except Exception as exc:
+            print(f"FMP search failed: {type(exc).__name__}: {exc}", flush=True)
+            return search_ticker_candidates(query, limit)
+    candidates = rows if isinstance(rows, list) else []
+    if asset == "etf":
+        candidates = [row for row in candidates if "ETF" in str(row.get("name", "")).upper() or row.get("symbol") in {"SPY", "QQQ", "VOO"}]
+    return candidates[:limit]
+
+
+async def fmp_available(path: str, params: dict[str, str]) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            data = await fetch_fmp_json(client, path, params)
+        return bool(data)
+    except Exception as exc:
+        print(f"FMP capability unavailable: {path} {params.get('symbol', '')}: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+
+async def build_verified_metric_picker_card(symbol: str, name: str = "", asset: str = "equity") -> dict[str, Any]:
+    symbol = symbol.upper()
+    if asset != "equity":
+        return build_price_picker_card(symbol, name, asset)
+
+    today = date.today()
+    start_date = today - timedelta(days=370)
+    quote_ok, history_ok, metrics_ok, income_ok, yahoo_ok = await asyncio.gather(
+        fmp_available("quote", {"symbol": symbol}),
+        fmp_available("historical-price-eod/full", {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()}),
+        fmp_available("key-metrics-ttm", {"symbol": symbol}),
+        fmp_available("income-statement", {"symbol": symbol, "period": "annual", "limit": "5"}),
+        yahoo_price_available(symbol),
+    )
+    price_ok = (quote_ok and history_ok) or yahoo_ok
+    actions: list[dict[str, Any]] = []
+    if quote_ok and history_ok and metrics_ok and income_ok:
+        actions.append(card_button("\u5168\u91cf\u5feb\u7167", {"action": "run_equity", "symbol": symbol, "sections": ["price", "valuation", "growth", "margin"]}, "primary"))
+    if quote_ok and metrics_ok and income_ok:
+        actions.append(card_button("\u4f30\u503c+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["valuation", "margin"]}, "primary" if not actions else "default"))
+    if income_ok:
+        actions.append(card_button("\u6536\u5165\u589e\u957f+\u5229\u6da6\u7387", {"action": "run_equity", "symbol": symbol, "sections": ["growth", "margin"]}, "primary" if not actions else "default"))
+    if price_ok:
+        price_action = {"action": "run_equity", "symbol": symbol, "sections": ["price"]} if quote_ok and history_ok else {"action": "run_price", "asset": "equity", "symbol": symbol}
+        actions.append(card_button("\u8fd1\u4e00\u5e74\u80a1\u4ef7", price_action, "primary" if not actions else "default"))
+    actions.append(card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}))
+
+    display_name = f"{symbol} {name}".strip()
+    content = (
+        f"\u5df2\u9009\u6807\u7684\uff1a**{display_name}**\n\n"
+        "\u4e0b\u9762\u53ea\u663e\u793a\u8fd9\u4e2a\u6807\u7684\u5b9e\u65f6\u68c0\u6d4b\u540e\u53ef\u6267\u884c\u7684\u6309\u94ae\u3002"
+    )
+    return build_interactive_card("\u9009\u62e9\u67e5\u8be2\u5185\u5bb9", content, actions, "green")
 
 
 async def answer_equity_snapshot(message: str) -> str | None:
@@ -575,6 +739,102 @@ async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | se
             ])
 
     return "\n".join(lines).strip()
+
+
+async def answer_price_snapshot(symbol: str, asset: str = "instrument") -> str:
+    symbol = symbol.upper()
+    today = date.today()
+    start_date = today - timedelta(days=370)
+    source = "FMP"
+    quote_row: dict[str, Any] = {}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            quote_task = fetch_fmp_json(client, "quote", {"symbol": symbol})
+            history_task = fetch_fmp_json(
+                client,
+                "historical-price-eod/full",
+                {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
+            )
+            quote, history = await asyncio.gather(quote_task, history_task)
+
+        quote_row = quote[0] if isinstance(quote, list) and quote else {}
+        historical = history.get("historical", []) if isinstance(history, dict) else history if isinstance(history, list) else []
+        latest_close = historical[0].get("close") if historical else quote_row.get("price")
+        first_close = historical[-1].get("close") if historical else None
+    except Exception as exc:
+        print(f"FMP price snapshot failed, falling back to Yahoo: {symbol}: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            source = "Yahoo Finance"
+            result = await fetch_yahoo_chart(symbol)
+            meta = result.get("meta", {})
+            closes = result.get("indicators", {}).get("quote", [{}])[0].get("close") or []
+            valid_closes = [close for close in closes if close is not None]
+            latest_close = meta.get("regularMarketPrice") or (valid_closes[-1] if valid_closes else None)
+            first_close = valid_closes[0] if valid_closes else None
+            quote_row = {
+                "name": meta.get("shortName") or meta.get("longName") or symbol,
+                "price": latest_close,
+                "yearHigh": max(valid_closes) if valid_closes else None,
+                "yearLow": min(valid_closes) if valid_closes else None,
+                "marketCap": None,
+            }
+        except Exception as yahoo_exc:
+            print(f"Yahoo price snapshot failed, falling back to FMP quote only: {symbol}: {type(yahoo_exc).__name__}: {yahoo_exc}", flush=True)
+            source = "FMP quote"
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    quote = await fetch_fmp_json(client, "quote", {"symbol": symbol})
+                quote_row = quote[0] if isinstance(quote, list) and quote else {}
+            except Exception as quote_exc:
+                print(f"FMP quote-only fallback failed: {symbol}: {type(quote_exc).__name__}: {quote_exc}", flush=True)
+                source = "unavailable"
+                quote_row = {"name": symbol, "price": None, "yearHigh": None, "yearLow": None, "marketCap": None}
+            latest_close = quote_row.get("price")
+            first_close = None
+    one_year_return = None
+    if latest_close and first_close:
+        one_year_return = (float(latest_close) / float(first_close) - 1) * 100
+
+    return "\n".join([
+        f"{symbol} {quote_row.get('name') or ''} \u884c\u60c5\u5feb\u7167".strip(),
+        "",
+        f"\u5185\u90e8\u6307\u4ee4\uff1aPRICE_SNAPSHOT asset={asset} symbol={symbol} provider={source}",
+        f"\u6570\u636e\u6e90\uff1a{source}",
+        "",
+        f"- \u6700\u65b0\u4ef7\u683c\uff1a{fmt_number(quote_row.get('price') or latest_close)}",
+        f"- \u8fd1\u4e00\u5e74\u6da8\u8dcc\u5e45\uff1a{fmt_percent(one_year_return)}",
+        f"- \u5e74\u5185\u9ad8\u70b9\uff1a{fmt_number(quote_row.get('yearHigh'))}",
+        f"- \u5e74\u5185\u4f4e\u70b9\uff1a{fmt_number(quote_row.get('yearLow'))}",
+        f"- \u5e02\u503c\uff1a{fmt_number(quote_row.get('marketCap'))}",
+    ])
+
+
+async def answer_macro_snapshot(series_id: str, name: str = "") -> str:
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=500, detail="FRED_API_KEY is not configured")
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "sort_order": "desc",
+        "limit": "3",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get("https://api.stlouisfed.org/fred/series/observations", params=params)
+        response.raise_for_status()
+        data = response.json()
+    observations = data.get("observations", [])
+    lines = [
+        f"{name or series_id} \u5b8f\u89c2\u6570\u636e",
+        "",
+        f"\u5185\u90e8\u6307\u4ee4\uff1aMACRO_SERIES series_id={series_id} provider=FRED",
+        "\u6570\u636e\u6e90\uff1aFRED",
+        "",
+    ]
+    for row in observations[:3]:
+        lines.append(f"- {row.get('date')}: {row.get('value')}")
+    return "\n".join(lines)
 
 
 def write_openbb_user_settings() -> None:
@@ -826,6 +1086,30 @@ async def process_equity_card_query(message_id: str, symbol: str, sections: list
     await reply_feishu_message(message_id, answer[:3000])
 
 
+async def process_price_card_query(message_id: str, symbol: str, asset: str) -> None:
+    try:
+        await add_feishu_reaction(message_id, FEISHU_RUN_REACTION)
+    except Exception as exc:
+        print(f"Failed to add Feishu run reaction: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        answer = await answer_price_snapshot(symbol, asset)
+    except Exception as exc:
+        answer = f"\u67e5\u8be2\u8fc7\u7a0b\u4e2d\u51fa\u9519\u4e86\uff1a{type(exc).__name__}: {exc}"
+    await reply_feishu_message(message_id, answer[:3000])
+
+
+async def process_macro_card_query(message_id: str, series_id: str, name: str) -> None:
+    try:
+        await add_feishu_reaction(message_id, FEISHU_RUN_REACTION)
+    except Exception as exc:
+        print(f"Failed to add Feishu run reaction: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        answer = await answer_macro_snapshot(series_id, name)
+    except Exception as exc:
+        answer = f"\u67e5\u8be2\u8fc7\u7a0b\u4e2d\u51fa\u9519\u4e86\uff1a{type(exc).__name__}: {exc}"
+    await reply_feishu_message(message_id, answer[:3000])
+
+
 def recursive_find_key(value: Any, key: str) -> Any:
     if isinstance(value, dict):
         if key in value:
@@ -876,16 +1160,37 @@ async def handle_feishu_card_action(body: dict[str, Any], background_tasks: Back
 
     if action == "asset":
         asset = str(action_value.get("asset", ""))
-        card = build_equity_console_card() if asset == "equity" else build_asset_coming_card(asset)
+        if asset == "equity":
+            card = build_equity_console_card()
+        elif asset == "etf":
+            card = build_etf_console_card()
+        elif asset == "index":
+            card = build_index_card()
+        elif asset == "macro":
+            card = build_macro_card()
+        elif asset == "crypto":
+            card = build_crypto_card()
+        else:
+            card = build_asset_coming_card(asset)
         await reply_feishu_card(message_id, card)
         return {"toast": {"type": "success", "content": "\u5df2\u6253\u5f00\u6a21\u5757"}}
 
+    if action == "quick_search":
+        asset = str(action_value.get("asset", "equity"))
+        query = str(action_value.get("query", ""))
+        candidates = await search_fmp_candidates(query, asset)
+        if not candidates:
+            return {"toast": {"type": "warning", "content": "\u6ca1\u6709\u627e\u5230\u5019\u9009\u6807\u7684"}}
+        await reply_feishu_card(message_id, build_symbol_candidates_card(query, candidates, asset))
+        return {"toast": {"type": "success", "content": "\u5df2\u8fd4\u56de\u5019\u9009"}}
+
     if action == "select_symbol":
+        asset = str(action_value.get("asset", "equity"))
         symbol = str(action_value.get("symbol", "")).upper()
         name = str(action_value.get("name", ""))
         if not symbol:
             return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
-        await reply_feishu_card(message_id, build_metric_picker_card(symbol, name))
+        await reply_feishu_card(message_id, await build_verified_metric_picker_card(symbol, name, asset))
         return {"toast": {"type": "success", "content": f"\u5df2\u9009 {symbol}"}}
 
     if action == "run_equity":
@@ -896,6 +1201,22 @@ async def handle_feishu_card_action(body: dict[str, Any], background_tasks: Back
         if not isinstance(sections, list):
             sections = ["price", "valuation", "growth", "margin"]
         background_tasks.add_task(process_equity_card_query, message_id, symbol, sections)
+        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+
+    if action == "run_price":
+        symbol = str(action_value.get("symbol", "")).upper()
+        asset = str(action_value.get("asset", "instrument"))
+        if not symbol:
+            return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
+        background_tasks.add_task(process_price_card_query, message_id, symbol, asset)
+        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+
+    if action == "run_macro":
+        series_id = str(action_value.get("series_id", ""))
+        name = str(action_value.get("name", series_id))
+        if not series_id:
+            return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u5b8f\u89c2\u6307\u6807"}}
+        background_tasks.add_task(process_macro_card_query, message_id, series_id, name)
         return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
 
     return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u7684\u5361\u7247\u64cd\u4f5c"}}
@@ -959,10 +1280,16 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     except Exception as exc:
         print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
 
-    if re.match(r"^(search|find|\u9009\u80a1|\u627e|\u641c|\u641c\u7d22)\s+", text, flags=re.IGNORECASE):
-        candidates = search_ticker_candidates(text)
+    search_match = re.match(r"^(?:search|find|\u641c\u80a1\u7968|\u9009\u80a1|\u80a1\u7968|\u641cETF|ETF|\u641c|\u641c\u7d22)\s+(.+)$", text, flags=re.IGNORECASE)
+    if search_match:
+        prefix = text[: search_match.start(1)]
+        query = search_match.group(1).strip()
+        asset = "etf" if "ETF" in prefix.upper() else "equity"
+        candidates = await search_fmp_candidates(query, asset)
+        if not candidates:
+            candidates = search_ticker_candidates(query)
         if candidates:
-            await reply_feishu_card(message_id, build_symbol_candidates_card(text, candidates))
+            await reply_feishu_card(message_id, build_symbol_candidates_card(query, candidates, asset))
             return {"status": "candidate_card_sent"}
 
     await reply_feishu_card(message_id, build_query_builder_card())
