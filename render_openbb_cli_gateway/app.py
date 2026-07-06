@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="OpenBB Platform CLI Gateway")
 SEEN_FEISHU_MESSAGE_IDS: set[str] = set()
+SEEN_FEISHU_CARD_ACTION_IDS: set[str] = set()
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
@@ -31,12 +32,38 @@ MAX_OUTPUT_CHARS = int(os.getenv("MAX_OUTPUT_CHARS", "12000"))
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_VERIFICATION_TOKEN = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-FEISHU_ACK_REACTION = os.getenv("FEISHU_ACK_REACTION", "OneSecond")
+FEISHU_ACK_REACTION = os.getenv("FEISHU_ACK_REACTION", "RaiseHand")
+FEISHU_OPEN_REACTION = os.getenv("FEISHU_OPEN_REACTION", FEISHU_ACK_REACTION)
+FEISHU_RUN_REACTION = os.getenv("FEISHU_RUN_REACTION", "OnIt")
 
 MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+
+TICKER_DIRECTORY = [
+    {"symbol": "AAPL", "name": "Apple Inc.", "aliases": ["apple", "\u82f9\u679c", "iphone"]},
+    {"symbol": "NVDA", "name": "NVIDIA Corporation", "aliases": ["nvidia", "\u82f1\u4f1f\u8fbe", "\u82f1\u4f1f\u8fbe"]},
+    {"symbol": "MSFT", "name": "Microsoft Corporation", "aliases": ["microsoft", "\u5fae\u8f6f"]},
+    {"symbol": "GOOGL", "name": "Alphabet Inc. Class A", "aliases": ["google", "alphabet", "\u8c37\u6b4c"]},
+    {"symbol": "AMZN", "name": "Amazon.com Inc.", "aliases": ["amazon", "\u4e9a\u9a6c\u900a"]},
+    {"symbol": "TSLA", "name": "Tesla Inc.", "aliases": ["tesla", "\u7279\u65af\u62c9"]},
+    {"symbol": "META", "name": "Meta Platforms Inc.", "aliases": ["meta", "facebook", "\u8138\u4e66"]},
+    {"symbol": "AMD", "name": "Advanced Micro Devices Inc.", "aliases": ["amd", "\u8d85\u5a01"]},
+    {"symbol": "TSM", "name": "Taiwan Semiconductor Manufacturing", "aliases": ["tsmc", "\u53f0\u79ef\u7535", "\u53f0\u7a4d\u96fb"]},
+    {"symbol": "ASML", "name": "ASML Holding N.V.", "aliases": ["asml", "\u963f\u65af\u9ea6"]},
+    {"symbol": "AVGO", "name": "Broadcom Inc.", "aliases": ["broadcom", "\u535a\u901a"]},
+    {"symbol": "NFLX", "name": "Netflix Inc.", "aliases": ["netflix", "\u5948\u98de"]},
+    {"symbol": "BABA", "name": "Alibaba Group Holding", "aliases": ["alibaba", "\u963f\u91cc", "\u963f\u91cc\u5df4\u5df4"]},
+    {"symbol": "AA", "name": "Alcoa Corporation", "aliases": ["alcoa", "\u7f8e\u94dd"]},
+]
+
+SECTION_LABELS = {
+    "price": "\u8fd1\u4e00\u5e74\u80a1\u4ef7",
+    "valuation": "\u4f30\u503c",
+    "growth": "\u6536\u5165\u589e\u957f",
+    "margin": "\u5229\u6da6\u7387",
+}
 
 OPENBB_CREDENTIAL_ENV = {
     "fmp_api_key": "FMP_API_KEY",
@@ -109,6 +136,173 @@ def build_template_menu() -> str:
         "\u5efa\u8bae\uff1a\u5e38\u7528\u67e5\u8be2\u5c3d\u91cf\u7528\u201c\u80a1\u7968\u5feb\u7167 \u4ee3\u7801\u201d\u6216\u5b57\u6bb5\u6a21\u677f\uff0c"
         "\u4f1a\u76f4\u63a5\u8d70 FMP \u5feb\u901f API\uff0c\u4e0d\u7b49 CLI\u3002"
     )
+
+
+def normalize_search_text(text: str) -> str:
+    return compact_message(re.sub(r"^(search|find|\u9009\u80a1|\u627e|\u641c|\u641c\u7d22)", "", text.strip(), flags=re.IGNORECASE))
+
+
+def search_ticker_candidates(query: str, limit: int = 6) -> list[dict[str, Any]]:
+    normalized = normalize_search_text(query)
+    if not normalized:
+        return []
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for item in TICKER_DIRECTORY:
+        symbol = item["symbol"].lower()
+        aliases = [str(alias).lower() for alias in item.get("aliases", [])]
+        name = str(item["name"]).lower()
+        score = 0
+        if normalized == symbol:
+            score = 100
+        elif symbol.startswith(normalized):
+            score = 80
+        elif normalized in aliases:
+            score = 75
+        elif any(alias.startswith(normalized) or normalized in alias for alias in aliases):
+            score = 65
+        elif normalized in name:
+            score = 55
+        if score:
+            scored.append((score, item))
+
+    scored.sort(key=lambda row: (-row[0], row[1]["symbol"]))
+    return [item for _, item in scored[:limit]]
+
+
+def plain_text(content: str) -> dict[str, str]:
+    return {"tag": "plain_text", "content": content}
+
+
+def markdown_text(content: str) -> dict[str, str]:
+    return {"tag": "lark_md", "content": content}
+
+
+def card_button(label: str, value: dict[str, Any], button_type: str = "default") -> dict[str, Any]:
+    return {
+        "tag": "button",
+        "text": plain_text(label),
+        "type": button_type,
+        "value": value,
+    }
+
+
+def build_interactive_card(title: str, content: str, actions: list[dict[str, Any]], template: str = "blue") -> dict[str, Any]:
+    elements: list[dict[str, Any]] = [{"tag": "div", "text": markdown_text(content)}]
+    for i in range(0, len(actions), 3):
+        elements.append({"tag": "action", "actions": actions[i : i + 3]})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": template, "title": plain_text(title)},
+        "elements": elements,
+    }
+
+
+def build_query_builder_card() -> dict[str, Any]:
+    content = (
+        "**OpenBB Platform \u6295\u7814\u603b\u63a7\u53f0**\n"
+        "\u5148\u9009\u8d44\u4ea7/\u6570\u636e\u7c7b\u578b\uff0c\u518d\u9009\u6807\u7684\u3001\u6307\u6807\u3001\u5468\u671f\u548c\u8f93\u51fa\u683c\u5f0f\u3002\n\n"
+        "\u6700\u540e\u540e\u7aef\u4f1a\u751f\u6210\u7ed3\u6784\u5316\u6307\u4ee4\uff0c\u518d\u8c03\u7528 OpenBB / FMP / FRED / Tiingo \u7b49\u6570\u636e\u6e90\u3002"
+    )
+    actions = [
+        card_button("\u80a1\u7968", {"action": "asset", "asset": "equity"}, "primary"),
+        card_button("ETF", {"action": "asset", "asset": "etf"}),
+        card_button("\u6307\u6570", {"action": "asset", "asset": "index"}),
+        card_button("\u5b8f\u89c2", {"action": "asset", "asset": "macro"}),
+        card_button("\u5916\u6c47", {"action": "asset", "asset": "fx"}),
+        card_button("\u52a0\u5bc6", {"action": "asset", "asset": "crypto"}),
+        card_button("\u5927\u5b97\u5546\u54c1", {"action": "asset", "asset": "commodity"}),
+        card_button("\u65b0\u95fb", {"action": "asset", "asset": "news"}),
+    ]
+    return build_interactive_card("OpenBB \u6295\u7814\u603b\u63a7\u53f0", content, actions)
+
+
+def build_equity_console_card() -> dict[str, Any]:
+    content = (
+        "**\u80a1\u7968\u67e5\u8be2**\n"
+        "\u5148\u9009\u6807\u7684\uff0c\u518d\u9009\u4f60\u8981\u7684\u529f\u80fd/\u6307\u6807\u3002\n\n"
+        "\u5982\u679c\u5019\u9009\u91cc\u6ca1\u6709\uff0c\u4f60\u4e5f\u53ef\u4ee5\u76f4\u63a5\u53d1\uff1a`\u9009\u80a1 \u82f9\u679c`\u3001`\u9009\u80a1 AA`\u3001`\u9009\u80a1 NVDA`\u3002"
+    )
+    actions = [
+        card_button("\u82f9\u679c AAPL", {"action": "select_symbol", "symbol": "AAPL", "name": "Apple Inc."}, "primary"),
+        card_button("\u82f1\u4f1f\u8fbe NVDA", {"action": "select_symbol", "symbol": "NVDA", "name": "NVIDIA Corporation"}),
+        card_button("\u5fae\u8f6f MSFT", {"action": "select_symbol", "symbol": "MSFT", "name": "Microsoft Corporation"}),
+        card_button("\u8c37\u6b4c GOOGL", {"action": "select_symbol", "symbol": "GOOGL", "name": "Alphabet Inc. Class A"}),
+        card_button("\u7279\u65af\u62c9 TSLA", {"action": "select_symbol", "symbol": "TSLA", "name": "Tesla Inc."}),
+        card_button("\u4e9a\u9a6c\u900a AMZN", {"action": "select_symbol", "symbol": "AMZN", "name": "Amazon.com Inc."}),
+        card_button("AA Alcoa", {"action": "select_symbol", "symbol": "AA", "name": "Alcoa Corporation"}),
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}),
+    ]
+    return build_interactive_card("\u80a1\u7968\u67e5\u8be2", content, actions, "blue")
+
+
+def build_asset_coming_card(asset: str) -> dict[str, Any]:
+    labels = {
+        "etf": "ETF",
+        "index": "\u6307\u6570",
+        "macro": "\u5b8f\u89c2",
+        "fx": "\u5916\u6c47",
+        "crypto": "\u52a0\u5bc6",
+        "commodity": "\u5927\u5b97\u5546\u54c1",
+        "news": "\u65b0\u95fb",
+    }
+    label = labels.get(asset, asset)
+    content = (
+        f"**{label} \u6a21\u5757**\n"
+        "\u8fd9\u4e2a\u5165\u53e3\u5df2\u7ecf\u4fdd\u7559\u5728\u603b\u63a7\u53f0\u91cc\uff0c\u4e0b\u4e00\u6b65\u53ef\u4ee5\u63a5\u5bf9\u5e94 OpenBB \u8def\u5f84\u3002\n\n"
+        "\u8ba1\u5212\u6307\u4ee4\u683c\u5f0f\uff1a\n"
+        f"`OPENBB_QUERY asset={asset} target=<symbol_or_series> metric=<metric> period=<period> format=<format>`"
+    )
+    actions = [
+        card_button("\u8fd4\u56de\u603b\u63a7\u53f0", {"action": "home"}, "primary"),
+        card_button("\u8fdb\u5165\u80a1\u7968\u6a21\u5757", {"action": "asset", "asset": "equity"}),
+    ]
+    return build_interactive_card(f"{label} \u6a21\u5757", content, actions, "purple")
+
+
+def build_symbol_candidates_card(query: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    content = (
+        f"\u641c\u7d22\uff1a`{query}`\n"
+        "\u8bf7\u9009\u62e9\u6b63\u786e\u6807\u7684\uff0c\u4e0b\u4e00\u6b65\u518d\u9009\u8981\u67e5\u7684\u529f\u80fd\u548c\u6307\u6807\u3002"
+    )
+    actions = [
+        card_button(
+            f"{item['symbol']} {item['name'][:20]}",
+            {"action": "select_symbol", "symbol": item["symbol"], "name": item["name"]},
+            "primary" if idx == 0 else "default",
+        )
+        for idx, item in enumerate(candidates)
+    ]
+    return build_interactive_card("\u9009\u62e9\u6807\u7684", content, actions)
+
+
+def build_metric_picker_card(symbol: str, name: str = "") -> dict[str, Any]:
+    display_name = f"{symbol} {name}".strip()
+    content = (
+        f"\u5df2\u9009\u6807\u7684\uff1a**{display_name}**\n\n"
+        "\u9009\u62e9\u8981\u67e5\u7684\u5185\u5bb9\uff0c\u540e\u7aef\u4f1a\u751f\u6210\u7ed3\u6784\u5316\u6307\u4ee4\uff1a\n"
+        f"`EQUITY_SNAPSHOT symbol={symbol} sections=<selected> provider=FMP`"
+    )
+    actions = [
+        card_button(
+            "\u5168\u91cf\u5feb\u7167",
+            {"action": "run_equity", "symbol": symbol, "sections": ["price", "valuation", "growth", "margin"]},
+            "primary",
+        ),
+        card_button(
+            "\u4f30\u503c+\u5229\u6da6\u7387",
+            {"action": "run_equity", "symbol": symbol, "sections": ["valuation", "margin"]},
+        ),
+        card_button(
+            "\u6536\u5165\u589e\u957f+\u5229\u6da6\u7387",
+            {"action": "run_equity", "symbol": symbol, "sections": ["growth", "margin"]},
+        ),
+        card_button(
+            "\u8fd1\u4e00\u5e74\u80a1\u4ef7",
+            {"action": "run_equity", "symbol": symbol, "sections": ["price"]},
+        ),
+    ]
+    return build_interactive_card("\u9009\u62e9\u67e5\u8be2\u5185\u5bb9", content, actions, "green")
 
 
 def is_equity_research_request(message: str) -> bool:
@@ -282,6 +476,105 @@ async def answer_equity_snapshot(message: str) -> str | None:
         "这是一版快速数据摘要；后续可以再加同行对比、历史估值分位和图表卡片。",
     ]
     return "\n".join(lines)
+
+
+async def answer_equity_snapshot_by_symbol(symbol: str, sections: list[str] | set[str] | None = None) -> str:
+    selected_sections = set(sections or ["price", "valuation", "growth", "margin"])
+    if not FMP_API_KEY:
+        raise HTTPException(status_code=500, detail="FMP_API_KEY is not configured")
+
+    today = date.today()
+    start_date = today - timedelta(days=370)
+    symbol = symbol.upper()
+    print(f"Card equity snapshot path: symbol={symbol}, sections={','.join(sorted(selected_sections))}", flush=True)
+    async with httpx.AsyncClient(timeout=45) as client:
+        quote_task = fetch_fmp_json(client, "quote", {"symbol": symbol})
+        metrics_task = fetch_fmp_json(client, "key-metrics-ttm", {"symbol": symbol})
+        income_task = fetch_fmp_json(client, "income-statement", {"symbol": symbol, "period": "annual", "limit": "5"})
+        history_task = fetch_fmp_json(
+            client,
+            "historical-price-eod/full",
+            {"symbol": symbol, "from": start_date.isoformat(), "to": today.isoformat()},
+        )
+        quote, metrics, income, history = await asyncio.gather(
+            quote_task,
+            metrics_task,
+            income_task,
+            history_task,
+        )
+
+    quote_row = quote[0] if isinstance(quote, list) and quote else {}
+    metrics_row = metrics[0] if isinstance(metrics, list) and metrics else {}
+    income_rows = income if isinstance(income, list) else []
+    latest_income = income_rows[0] if income_rows else {}
+    previous_income = income_rows[1] if len(income_rows) > 1 else {}
+    historical = history.get("historical", []) if isinstance(history, dict) else history if isinstance(history, list) else []
+    latest_close = historical[0].get("close") if historical else quote_row.get("price")
+    first_close = historical[-1].get("close") if historical else None
+
+    one_year_return = None
+    if latest_close and first_close:
+        one_year_return = (float(latest_close) / float(first_close) - 1) * 100
+
+    revenue_growth = None
+    if latest_income.get("revenue") and previous_income.get("revenue"):
+        revenue_growth = (float(latest_income["revenue"]) / float(previous_income["revenue"]) - 1) * 100
+
+    pe_value = (
+        quote_row.get("pe")
+        or metrics_row.get("peRatioTTM")
+        or (1 / float(metrics_row["earningsYieldTTM"]) if metrics_row.get("earningsYieldTTM") else None)
+        or safe_ratio(quote_row.get("price"), latest_income.get("epsDiluted") or latest_income.get("eps"))
+    )
+    ps_value = metrics_row.get("priceToSalesRatioTTM") or safe_ratio(quote_row.get("marketCap"), latest_income.get("revenue"))
+    ev_ebitda_value = metrics_row.get("enterpriseValueOverEBITDATTM") or metrics_row.get("evToEBITDATTM")
+    gross_margin = latest_income.get("grossProfitRatio") or safe_ratio(latest_income.get("grossProfit"), latest_income.get("revenue"))
+    operating_margin = latest_income.get("operatingIncomeRatio") or safe_ratio(
+        latest_income.get("operatingIncome"),
+        latest_income.get("revenue"),
+    )
+    net_margin = latest_income.get("netIncomeRatio") or safe_ratio(latest_income.get("netIncome"), latest_income.get("revenue"))
+
+    company_name = quote_row.get("name") or symbol
+    section_names = "\uff0c".join(SECTION_LABELS.get(section, section) for section in selected_sections)
+    lines = [
+        f"{symbol} {company_name} \u6295\u7814\u67e5\u8be2",
+        "",
+        f"\u5185\u90e8\u6307\u4ee4\uff1aEQUITY_SNAPSHOT symbol={symbol} sections={','.join(sorted(selected_sections))} provider=FMP",
+        f"\u5df2\u9009\u5185\u5bb9\uff1a{section_names}",
+        "",
+        "\u6570\u636e\u6e90\uff1aFMP\uff0c\u8d70\u5feb\u901f API \u8def\u5f84\uff0c\u672a\u8d70\u4ea4\u4e92\u5f0f CLI\u3002",
+        "",
+    ]
+    if "price" in selected_sections:
+        lines.extend([
+            "\u80a1\u4ef7",
+            f"- \u6700\u65b0\u4ef7\u683c\uff1a{fmt_number(quote_row.get('price') or latest_close)}",
+            f"- \u8fd1\u4e00\u5e74\u6da8\u8dcc\u5e45\uff1a{fmt_percent(one_year_return)}",
+            f"- \u5e02\u503c\uff1a{fmt_number(quote_row.get('marketCap'))}",
+            "",
+        ])
+    if "valuation" in selected_sections:
+        lines.extend([
+            "\u4f30\u503c",
+            f"- PE\uff1a{fmt_number(pe_value)}",
+            f"- PS\uff1a{fmt_number(ps_value)}",
+            f"- EV/EBITDA\uff1a{fmt_number(ev_ebitda_value)}",
+            "",
+        ])
+    if {"growth", "margin"} & selected_sections:
+        lines.append("\u6536\u5165\u4e0e\u5229\u6da6\u7387")
+        lines.append(f"- \u6700\u8fd1\u5e74\u5ea6\u6536\u5165\uff1a{fmt_number(latest_income.get('revenue'))}")
+        if "growth" in selected_sections:
+            lines.append(f"- \u6536\u5165\u540c\u6bd4\u589e\u957f\uff1a{fmt_percent(revenue_growth)}")
+        if "margin" in selected_sections:
+            lines.extend([
+                f"- \u6bdb\u5229\u7387\uff1a{fmt_percent(gross_margin, ratio=True)}",
+                f"- \u8425\u4e1a\u5229\u6da6\u7387\uff1a{fmt_percent(operating_margin, ratio=True)}",
+                f"- \u51c0\u5229\u7387\uff1a{fmt_percent(net_margin, ratio=True)}",
+            ])
+
+    return "\n".join(lines).strip()
 
 
 def write_openbb_user_settings() -> None:
@@ -485,6 +778,20 @@ async def reply_feishu_message(message_id: str, text: str) -> None:
             raise HTTPException(status_code=502, detail=data)
 
 
+async def reply_feishu_card(message_id: str, card: dict[str, Any]) -> None:
+    token = await get_feishu_tenant_token()
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            raise HTTPException(status_code=502, detail=data)
+
+
 async def add_feishu_reaction(message_id: str, emoji_type: str = FEISHU_ACK_REACTION) -> None:
     token = await get_feishu_tenant_token()
     async with httpx.AsyncClient(timeout=30) as client:
@@ -505,6 +812,93 @@ async def process_feishu_query(message_id: str, text: str) -> None:
     except Exception as exc:
         answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
     await reply_feishu_message(message_id, answer[:3000])
+
+
+async def process_equity_card_query(message_id: str, symbol: str, sections: list[str]) -> None:
+    try:
+        await add_feishu_reaction(message_id, FEISHU_RUN_REACTION)
+    except Exception as exc:
+        print(f"Failed to add Feishu run reaction: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        answer = await answer_equity_snapshot_by_symbol(symbol, sections)
+    except Exception as exc:
+        answer = f"\u67e5\u8be2\u8fc7\u7a0b\u4e2d\u51fa\u9519\u4e86\uff1a{type(exc).__name__}: {exc}"
+    await reply_feishu_message(message_id, answer[:3000])
+
+
+def recursive_find_key(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = recursive_find_key(child, key)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = recursive_find_key(item, key)
+            if found:
+                return found
+    return None
+
+
+def extract_card_action_value(body: dict[str, Any]) -> dict[str, Any]:
+    value = recursive_find_key(body, "value")
+    return value if isinstance(value, dict) else {}
+
+
+def extract_action_message_id(body: dict[str, Any]) -> str:
+    for key in ("open_message_id", "message_id"):
+        value = recursive_find_key(body, key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+async def handle_feishu_card_action(body: dict[str, Any], background_tasks: BackgroundTasks) -> dict[str, Any]:
+    action_value = extract_card_action_value(body)
+    action = action_value.get("action")
+    message_id = extract_action_message_id(body)
+    action_id = recursive_find_key(body, "event_id")
+    if action_id:
+        action_id = str(action_id)
+        if action_id in SEEN_FEISHU_CARD_ACTION_IDS:
+            return {"toast": {"type": "info", "content": "\u5df2\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406"}}
+        SEEN_FEISHU_CARD_ACTION_IDS.add(action_id)
+
+    if not message_id:
+        print(f"Card action missing message id: {json.dumps(body, ensure_ascii=False)[:1000]}", flush=True)
+        return {"toast": {"type": "warning", "content": "\u672a\u627e\u5230\u53ef\u56de\u590d\u7684\u6d88\u606f"}}
+
+    if action == "home":
+        await reply_feishu_card(message_id, build_query_builder_card())
+        return {"toast": {"type": "success", "content": "\u5df2\u8fd4\u56de\u603b\u63a7\u53f0"}}
+
+    if action == "asset":
+        asset = str(action_value.get("asset", ""))
+        card = build_equity_console_card() if asset == "equity" else build_asset_coming_card(asset)
+        await reply_feishu_card(message_id, card)
+        return {"toast": {"type": "success", "content": "\u5df2\u6253\u5f00\u6a21\u5757"}}
+
+    if action == "select_symbol":
+        symbol = str(action_value.get("symbol", "")).upper()
+        name = str(action_value.get("name", ""))
+        if not symbol:
+            return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
+        await reply_feishu_card(message_id, build_metric_picker_card(symbol, name))
+        return {"toast": {"type": "success", "content": f"\u5df2\u9009 {symbol}"}}
+
+    if action == "run_equity":
+        symbol = str(action_value.get("symbol", "")).upper()
+        sections = action_value.get("sections") or ["price", "valuation", "growth", "margin"]
+        if not symbol:
+            return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u6807\u7684"}}
+        if not isinstance(sections, list):
+            sections = ["price", "valuation", "growth", "margin"]
+        background_tasks.add_task(process_equity_card_query, message_id, symbol, sections)
+        return {"toast": {"type": "success", "content": "\u5df2\u751f\u6210\u6307\u4ee4\u5e76\u5f00\u59cb\u67e5\u8be2"}}
+
+    return {"toast": {"type": "warning", "content": "\u672a\u8bc6\u522b\u7684\u5361\u7247\u64cd\u4f5c"}}
 
 
 @app.get("/health")
@@ -537,8 +931,12 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     if "challenge" in body:
         return {"challenge": body["challenge"]}
 
-    if FEISHU_VERIFICATION_TOKEN and body.get("token") != FEISHU_VERIFICATION_TOKEN:
+    request_token = body.get("token") or body.get("header", {}).get("token")
+    if FEISHU_VERIFICATION_TOKEN and request_token != FEISHU_VERIFICATION_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid Feishu verification token")
+
+    if extract_card_action_value(body).get("action"):
+        return await handle_feishu_card_action(body, background_tasks)
 
     event = body.get("event", {})
     message = event.get("message", {})
@@ -556,23 +954,16 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
         text = content
     text = re.sub(r"@\S+", "", text).strip()
 
-    if not text:
-        try:
-            await add_feishu_reaction(message_id)
-        except Exception as exc:
-            print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
-        return {"status": "empty"}
-
-    if is_smalltalk_message(text):
-        try:
-            await add_feishu_reaction(message_id)
-        except Exception as exc:
-            print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
-        return {"status": "smalltalk_ignored"}
-
     try:
-        await add_feishu_reaction(message_id)
+        await add_feishu_reaction(message_id, FEISHU_OPEN_REACTION)
     except Exception as exc:
         print(f"Failed to add Feishu reaction: {type(exc).__name__}: {exc}", flush=True)
-    background_tasks.add_task(process_feishu_query, message_id, text)
-    return {"status": "accepted"}
+
+    if re.match(r"^(search|find|\u9009\u80a1|\u627e|\u641c|\u641c\u7d22)\s+", text, flags=re.IGNORECASE):
+        candidates = search_ticker_candidates(text)
+        if candidates:
+            await reply_feishu_card(message_id, build_symbol_candidates_card(text, candidates))
+            return {"status": "candidate_card_sent"}
+
+    await reply_feishu_card(message_id, build_query_builder_card())
+    return {"status": "console_card_sent"}
