@@ -73,6 +73,44 @@ def extract_symbol(message: str) -> str | None:
     return None
 
 
+def compact_message(message: str) -> str:
+    return re.sub(r"[\s,.;:!?\u3001\uff0c\u3002\uff1b\uff1a\uff01\uff1f]+", "", message).lower()
+
+
+def is_template_menu_request(message: str) -> bool:
+    normalized = compact_message(message)
+    return normalized in {
+        "help",
+        "menu",
+        "template",
+        "templates",
+        "\u5e2e\u52a9",
+        "\u83dc\u5355",
+        "\u6a21\u677f",
+        "\u9009\u9879",
+        "\u600e\u4e48\u67e5",
+        "\u5982\u4f55\u4f7f\u7528",
+    }
+
+
+def build_template_menu() -> str:
+    return (
+        "OpenBB \u6295\u7814\u67e5\u8be2\u6a21\u677f\n\n"
+        "1. \u80a1\u7968\u5feb\u7167\uff08\u63a8\u8350\uff09\n"
+        "\u7528\u9014\uff1a\u67e5\u4f30\u503c\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u3001\u8fd1\u4e00\u5e74\u80a1\u4ef7\u3002\n"
+        "\u5feb\u6377\u5199\u6cd5\uff1a\u80a1\u7968\u5feb\u7167 NVDA\n"
+        "\u5b57\u6bb5\u6a21\u677f\uff1a\n"
+        "\u7c7b\u578b\uff1a\u80a1\u7968\u5feb\u7167\n"
+        "\u4ee3\u7801\uff1aNVDA\n"
+        "\u5e02\u573a\uff1aUS\n"
+        "\u6307\u6807\uff1a\u4f30\u503c\uff0c\u6536\u5165\u589e\u957f\uff0c\u5229\u6da6\u7387\uff0c\u8fd1\u4e00\u5e74\u80a1\u4ef7\n\n"
+        "2. \u81ea\u7136\u8bed\u8a00\u5199\u6cd5\n"
+        "\u67e5 AAPL \u7684\u4f30\u503c\u3001\u6536\u5165\u589e\u957f\u3001\u5229\u6da6\u7387\u548c\u6700\u8fd1\u4e00\u5e74\u80a1\u4ef7\n\n"
+        "\u5efa\u8bae\uff1a\u5e38\u7528\u67e5\u8be2\u5c3d\u91cf\u7528\u201c\u80a1\u7968\u5feb\u7167 \u4ee3\u7801\u201d\u6216\u5b57\u6bb5\u6a21\u677f\uff0c"
+        "\u4f1a\u76f4\u63a5\u8d70 FMP \u5feb\u901f API\uff0c\u4e0d\u7b49 CLI\u3002"
+    )
+
+
 def is_equity_research_request(message: str) -> bool:
     if not extract_symbol(message):
         return False
@@ -86,6 +124,10 @@ def is_equity_research_request(message: str) -> bool:
         "\u8425\u6536",
         "\u6bdb\u5229",
         "\u51c0\u5229",
+        "\u80a1\u7968\u5feb\u7167",
+        "\u6295\u7814\u5feb\u7167",
+        "EQUITY_SNAPSHOT",
+        "SNAPSHOT",
         "PE",
         "PS",
     )
@@ -354,6 +396,9 @@ def extract_commands(model_text: str) -> list[str]:
 
 
 async def answer_with_openbb(message: str, timeout_seconds: int) -> str:
+    if is_template_menu_request(message):
+        return build_template_menu()
+
     if is_equity_research_request(message):
         try:
             equity_answer = await answer_equity_snapshot(message)
