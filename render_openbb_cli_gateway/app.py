@@ -1062,8 +1062,6 @@ def normalize_routine(payload: RoutineRequest) -> str:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if not line.startswith("/"):
-            raise HTTPException(status_code=400, detail=f"OpenBB CLI command must start with /: {line}")
         if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(OPENBB_ALLOWED_PREFIXES):
             raise HTTPException(status_code=400, detail=f"Command is not allow-listed: {line}")
         cleaned.append(line)
@@ -1128,7 +1126,9 @@ def extract_commands(model_text: str) -> list[str]:
     lines = []
     for raw_line in model_text.splitlines():
         line = raw_line.strip().strip("`")
-        if line.startswith("/") and (not OPENBB_REQUIRE_ALLOWED_PREFIX or line.startswith(tuple(OPENBB_ALLOWED_PREFIXES))):
+        if line and not line.startswith("#") and line not in {"```", "```text"}:
+            if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
+                continue
             lines.append(line)
     return lines[:12]
 
@@ -1137,7 +1137,9 @@ def commands_from_user_message(message: str) -> list[str]:
     lines = []
     for raw_line in message.splitlines():
         line = raw_line.strip()
-        if line.startswith("/") and (not OPENBB_REQUIRE_ALLOWED_PREFIX or line.startswith(tuple(OPENBB_ALLOWED_PREFIXES))):
+        if line and not line.startswith("#"):
+            if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
+                continue
             lines.append(line)
     return lines
 
