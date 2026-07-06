@@ -1,7 +1,9 @@
 import asyncio
+import inspect
 import json
 import os
 import re
+import shlex
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,9 @@ INTERRUPTED_TASK_STATUSES = {
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
 OPENBB_TIMEOUT_SECONDS = int(os.getenv("OPENBB_TIMEOUT_SECONDS", "120"))
+OPENBB_EXECUTION_MODE = os.getenv("OPENBB_EXECUTION_MODE", "platform_api").strip().lower()
+OPENBB_PLATFORM_PREWARM = os.getenv("OPENBB_PLATFORM_PREWARM", "1").strip().lower() in {"1", "true", "yes", "on"}
+OPENBB_PLATFORM_MAX_ROWS = int(os.getenv("OPENBB_PLATFORM_MAX_ROWS", "80"))
 OPENBB_FAST_EQUITY_SNAPSHOT = os.getenv("OPENBB_FAST_EQUITY_SNAPSHOT", "0").strip().lower() in {"1", "true", "yes", "on"}
 OPENBB_ALLOWED_PREFIXES = tuple(
     prefix.strip()
@@ -57,6 +62,9 @@ MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+
+OPENBB_OBB: Any | None = None
+OPENBB_IMPORT_LOCK: asyncio.Lock | None = None
 
 TICKER_DIRECTORY = [
     {"symbol": "AAPL", "name": "Apple Inc.", "aliases": ["apple", "\u82f9\u679c", "iphone"]},
@@ -130,6 +138,10 @@ class RoutineRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+
+
+class UnsupportedOpenBBPlatformCommand(Exception):
+    pass
 
 
 def extract_symbol(message: str) -> str | None:
@@ -1086,6 +1098,243 @@ def normalize_routine(payload: RoutineRequest) -> str:
     return "\n".join(cleaned) + "\n"
 
 
+def parse_cli_value(value: str) -> Any:
+    lowered = value.strip().lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"none", "null"}:
+        return None
+    if "," in value and not value.startswith("{") and not value.startswith("["):
+        return value
+    try:
+        if re.fullmatch(r"-?\d+", value):
+            return int(value)
+        if re.fullmatch(r"-?\d+\.\d+", value):
+            return float(value)
+    except ValueError:
+        return value
+    return value
+
+
+def parse_openbb_command(command: str) -> dict[str, Any]:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise UnsupportedOpenBBPlatformCommand(f"Cannot parse command: {command}") from exc
+    if not tokens:
+        raise UnsupportedOpenBBPlatformCommand("Empty command")
+
+    route = tokens[0].strip()
+    if not route.startswith("/"):
+        raise UnsupportedOpenBBPlatformCommand(f"Only slash OpenBB routes are supported by the platform engine: {route}")
+
+    kwargs: dict[str, Any] = {}
+    positional: list[Any] = []
+    idx = 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token.startswith("--"):
+            key = token[2:].replace("-", "_")
+            if not key:
+                idx += 1
+                continue
+            if idx + 1 < len(tokens) and not tokens[idx + 1].startswith("--"):
+                kwargs[key] = parse_cli_value(tokens[idx + 1])
+                idx += 2
+            else:
+                kwargs[key] = True
+                idx += 1
+        elif token.startswith("-") and len(token) > 1:
+            key = token[1:].replace("-", "_")
+            kwargs[key] = True
+            idx += 1
+        else:
+            positional.append(parse_cli_value(token))
+            idx += 1
+
+    return {"route": route, "positional": positional, "kwargs": kwargs}
+
+
+def get_openbb_import_lock() -> asyncio.Lock:
+    global OPENBB_IMPORT_LOCK
+    if OPENBB_IMPORT_LOCK is None:
+        OPENBB_IMPORT_LOCK = asyncio.Lock()
+    return OPENBB_IMPORT_LOCK
+
+
+def import_openbb_obb() -> Any:
+    from openbb import obb  # pylint: disable=import-outside-toplevel
+
+    return obb
+
+
+async def get_openbb_obb() -> Any:
+    global OPENBB_OBB
+    if OPENBB_OBB is not None:
+        return OPENBB_OBB
+    async with get_openbb_import_lock():
+        if OPENBB_OBB is not None:
+            return OPENBB_OBB
+        print("OpenBB Platform import start", flush=True)
+        start = datetime.now(timezone.utc)
+        OPENBB_OBB = await asyncio.to_thread(import_openbb_obb)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        print(f"OpenBB Platform import finished seconds={elapsed:.1f}", flush=True)
+        return OPENBB_OBB
+
+
+async def prewarm_openbb_platform() -> None:
+    if not OPENBB_PLATFORM_PREWARM:
+        return
+    try:
+        await get_openbb_obb()
+    except Exception as exc:
+        print(f"OpenBB Platform prewarm failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+def resolve_openbb_callable(obb: Any, route: str) -> Any:
+    target = obb
+    for raw_part in route.strip("/").split("/"):
+        part = raw_part.strip().replace("-", "_")
+        if not part:
+            continue
+        if not hasattr(target, part):
+            raise UnsupportedOpenBBPlatformCommand(f"OpenBB Platform route not found: {route}")
+        target = getattr(target, part)
+    if not callable(target):
+        raise UnsupportedOpenBBPlatformCommand(f"OpenBB Platform route is not executable: {route}")
+    return target
+
+
+def fit_positionals_to_signature(func: Any, positional: list[Any], kwargs: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+    if not positional:
+        return [], kwargs
+    try:
+        parameters = list(inspect.signature(func).parameters.values())
+    except (TypeError, ValueError):
+        return positional, kwargs
+
+    fitted_args: list[Any] = []
+    fitted_kwargs = dict(kwargs)
+    remaining = list(positional)
+    for param in parameters:
+        if not remaining:
+            break
+        if param.kind not in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}:
+            continue
+        if param.name.startswith("__") or param.name in fitted_kwargs:
+            continue
+        fitted_args.append(remaining.pop(0))
+    if remaining:
+        fitted_args.extend(remaining)
+    return fitted_args, fitted_kwargs
+
+
+def dataframe_preview(df: Any) -> dict[str, Any]:
+    total_rows = int(getattr(df, "shape", [0])[0])
+    preview = df.head(OPENBB_PLATFORM_MAX_ROWS)
+    records = preview.to_dict(orient="records")
+    return {
+        "type": "dataframe",
+        "row_count": total_rows,
+        "truncated": total_rows > OPENBB_PLATFORM_MAX_ROWS,
+        "rows": records,
+    }
+
+
+def serialize_openbb_output(value: Any) -> dict[str, Any]:
+    if hasattr(value, "to_dataframe"):
+        try:
+            return dataframe_preview(value.to_dataframe(index=None))
+        except Exception:
+            pass
+    if hasattr(value, "to_dict"):
+        try:
+            data = value.to_dict("records")
+            if isinstance(data, list):
+                return {
+                    "type": value.__class__.__name__,
+                    "row_count": len(data),
+                    "truncated": len(data) > OPENBB_PLATFORM_MAX_ROWS,
+                    "rows": data[:OPENBB_PLATFORM_MAX_ROWS],
+                }
+            return {"type": value.__class__.__name__, "data": data}
+        except Exception:
+            pass
+    if hasattr(value, "model_dump"):
+        try:
+            return {"type": value.__class__.__name__, "data": value.model_dump(exclude_none=True)}
+        except Exception:
+            pass
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "row_count": len(value),
+            "truncated": len(value) > OPENBB_PLATFORM_MAX_ROWS,
+            "rows": value[:OPENBB_PLATFORM_MAX_ROWS],
+        }
+    if isinstance(value, dict):
+        return {"type": "dict", "data": value}
+    return {"type": value.__class__.__name__, "data": str(value)}
+
+
+def execute_openbb_callable(func: Any, positional: list[Any], kwargs: dict[str, Any]) -> Any:
+    args, fitted_kwargs = fit_positionals_to_signature(func, positional, kwargs)
+    return func(*args, **fitted_kwargs)
+
+
+async def execute_openbb_platform_command(command: str) -> dict[str, Any]:
+    parsed = parse_openbb_command(command)
+    obb = await get_openbb_obb()
+    func = resolve_openbb_callable(obb, parsed["route"])
+    start = datetime.now(timezone.utc)
+    result = await asyncio.to_thread(execute_openbb_callable, func, parsed["positional"], parsed["kwargs"])
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+    return {
+        "command": command,
+        "route": parsed["route"],
+        "params": {"positional": parsed["positional"], "kwargs": parsed["kwargs"]},
+        "seconds": round(elapsed, 3),
+        "output": serialize_openbb_output(result),
+    }
+
+
+async def run_openbb_platform_routine(commands: list[str], timeout_seconds: int) -> dict[str, Any]:
+    async def run_all() -> list[dict[str, Any]]:
+        outputs = []
+        for command in commands:
+            print(f"OpenBB Platform command start command={command[:300]}", flush=True)
+            try:
+                output = await execute_openbb_platform_command(command)
+            except Exception as exc:
+                output = {
+                    "command": command,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                print(f"OpenBB Platform command failed command={command[:300]} error={output['error']}", flush=True)
+            else:
+                print(
+                    "OpenBB Platform command finished "
+                    f"command={command[:300]} seconds={output.get('seconds')}",
+                    flush=True,
+                )
+            outputs.append(output)
+        return outputs
+
+    try:
+        started = datetime.now(timezone.utc)
+        results = await asyncio.wait_for(run_all(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="OpenBB Platform routine timed out") from exc
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return {
+        "execution_mode": "platform_api",
+        "returncode": 0 if all("error" not in item for item in results) else 1,
+        "seconds": round(elapsed, 3),
+        "results": results,
+    }
+
+
 async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         routine_path = Path(temp_dir) / "routine.openbb"
@@ -1290,6 +1539,30 @@ def format_cli_answer(question: str, commands: list[str], result: dict[str, Any]
     return "\n".join(parts).strip()
 
 
+def format_platform_answer(commands: list[str], result: dict[str, Any], summary: str | None = None) -> str:
+    parts = [
+        "OpenBB Platform 执行结果",
+        "",
+        "执行方式：OpenBB Platform Python API（常驻轻量引擎）",
+        "",
+        "实际执行的 OpenBB 路径：",
+        "```text",
+        "\n".join(commands),
+        "```",
+        "",
+        f"退出码：{result['returncode']}",
+        f"耗时：{result.get('seconds', 0)} 秒",
+    ]
+    if summary:
+        parts.extend(["", "整理结果：", summary.strip()])
+
+    result_text = json.dumps(result.get("results", []), ensure_ascii=False, indent=2, default=str)
+    if len(result_text) > MAX_OUTPUT_CHARS:
+        result_text = result_text[:MAX_OUTPUT_CHARS] + "\n...（结构化结果已截断）"
+    parts.extend(["", "结构化结果：", "```json", result_text, "```"])
+    return "\n".join(parts).strip()
+
+
 async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str | None = None) -> str:
     if OPENBB_FAST_EQUITY_SNAPSHOT and is_equity_research_request(message):
         try:
@@ -1350,6 +1623,45 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
         f"message_id={message_id or '-'} commands={' | '.join(commands)[:1000]}",
         flush=True,
     )
+    if OPENBB_EXECUTION_MODE in {"platform_api", "platform", "api"}:
+        result = await run_openbb_platform_routine(commands, timeout_seconds)
+        if message_id:
+            remember_feishu_task(
+                message_id,
+                status="summarizing",
+                returncode=result.get("returncode"),
+                platform_result_preview=json.dumps(result.get("results", []), ensure_ascii=False, default=str)[-1000:],
+                cli_finished_at=now_iso(),
+            )
+        summary = await call_model(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize the OpenBB Platform structured output for an investment research chat. "
+                        "Preserve important available fields, metrics, dates, units, and errors. "
+                        "If a command failed or data is missing, say exactly which part failed or is missing."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": message,
+                            "commands": commands,
+                            "execution_mode": result["execution_mode"],
+                            "returncode": result["returncode"],
+                            "results": result["results"],
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                },
+            ],
+            max_tokens=2200,
+        )
+        return format_platform_answer(commands, result, summary)
+
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
     if message_id:
         remember_feishu_task(
@@ -1772,6 +2084,7 @@ async def debug_run(
 async def startup() -> None:
     load_feishu_tasks()
     write_openbb_user_settings()
+    schedule_async_task("prewarm-openbb-platform", prewarm_openbb_platform())
     schedule_async_task("recover-interrupted-feishu-tasks", recover_interrupted_feishu_tasks())
 
 
@@ -1779,6 +2092,9 @@ async def startup() -> None:
 async def routine_endpoint(payload: RoutineRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_api_token(authorization)
     routine = normalize_routine(payload)
+    commands = [line for line in routine.splitlines() if line.strip()]
+    if OPENBB_EXECUTION_MODE in {"platform_api", "platform", "api"}:
+        return await run_openbb_platform_routine(commands, payload.timeout_seconds or OPENBB_TIMEOUT_SECONDS)
     return await run_openbb_routine(routine, payload.timeout_seconds or OPENBB_TIMEOUT_SECONDS)
 
 
