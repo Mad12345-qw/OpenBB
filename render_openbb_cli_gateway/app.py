@@ -1177,7 +1177,7 @@ async def get_openbb_obb() -> Any:
             return OPENBB_OBB
         print("OpenBB Platform import start", flush=True)
         start = datetime.now(timezone.utc)
-        OPENBB_OBB = await asyncio.to_thread(import_openbb_obb)
+        OPENBB_OBB = import_openbb_obb()
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         print(f"OpenBB Platform import finished seconds={elapsed:.1f}", flush=True)
         return OPENBB_OBB
@@ -1288,7 +1288,7 @@ async def execute_openbb_platform_command(command: str) -> dict[str, Any]:
     obb = await get_openbb_obb()
     func = resolve_openbb_callable(obb, parsed["route"])
     start = datetime.now(timezone.utc)
-    result = await asyncio.to_thread(execute_openbb_callable, func, parsed["positional"], parsed["kwargs"])
+    result = execute_openbb_callable(func, parsed["positional"], parsed["kwargs"])
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     return {
         "command": command,
