@@ -522,8 +522,16 @@ async def fetch_fmp_json(client: httpx.AsyncClient, path: str, params: dict[str,
 
 async def fetch_yahoo_chart(symbol: str) -> dict[str, Any]:
     url_symbol = symbol.replace("^", "%5E")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+    }
     async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{url_symbol}", params={"range": "1y", "interval": "1d"})
+        response = await client.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{url_symbol}",
+            params={"range": "1y", "interval": "1d"},
+            headers=headers,
+        )
         response.raise_for_status()
         data = response.json()
     result = (data.get("chart", {}).get("result") or [None])[0]
