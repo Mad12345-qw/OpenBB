@@ -1197,6 +1197,18 @@ def remember_feishu_task(message_id: str, **updates: Any) -> None:
         RECENT_FEISHU_TASKS.pop(oldest_key, None)
 
 
+def schedule_async_task(name: str, coro: Any) -> None:
+    task = asyncio.create_task(coro)
+
+    def log_task_done(done_task: asyncio.Task[Any]) -> None:
+        try:
+            done_task.result()
+        except Exception as exc:
+            print(f"Background task failed name={name} error={type(exc).__name__}: {exc}", flush=True)
+
+    task.add_done_callback(log_task_done)
+
+
 def configured_provider_guidance() -> str:
     configured = [
         key.replace("_api_key", "").replace("_token", "")
@@ -1254,6 +1266,9 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
 
     commands = commands_from_user_message(message)
     if not commands:
+        if message_id:
+            remember_feishu_task(message_id, status="translating", translate_started_at=now_iso())
+        print(f"OpenBB translate start message_id={message_id or '-'} text={message[:300]}", flush=True)
         command_text = await call_model(
             [
                 {
@@ -1272,6 +1287,11 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
             max_tokens=1200,
         )
         commands = extract_commands(command_text)
+        print(
+            "OpenBB translate finished "
+            f"message_id={message_id or '-'} commands={str(commands)[:1000]}",
+            flush=True,
+        )
     if not commands:
         if message_id:
             remember_feishu_task(message_id, status="error", error="no_openbb_commands", ended_at=now_iso())
@@ -1282,6 +1302,11 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
 
     if message_id:
         remember_feishu_task(message_id, status="running_cli", commands=commands, cli_started_at=now_iso())
+    print(
+        "OpenBB CLI task commands "
+        f"message_id={message_id or '-'} commands={' | '.join(commands)[:1000]}",
+        flush=True,
+    )
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
     if message_id:
         remember_feishu_task(
@@ -1408,6 +1433,7 @@ async def add_feishu_reaction_safely(message_id: str, emoji_type: str = FEISHU_A
     try:
         await add_feishu_reaction(message_id, emoji_type)
         remember_feishu_task(message_id, reaction=emoji_type, reaction_at=now_iso())
+        print(f"Feishu reaction added message_id={message_id} emoji={emoji_type}", flush=True)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         response = getattr(exc, "response", None)
@@ -1425,6 +1451,7 @@ async def process_openbb_task(
     timeout_seconds: int,
 ) -> None:
     remember_feishu_task(message_id, status="running", input=text, started_at=now_iso())
+    print(f"Feishu OpenBB task start message_id={message_id} text={text[:300]}", flush=True)
     try:
         answer = await answer_with_openbb(text, timeout_seconds, message_id=message_id)
     except Exception as exc:
@@ -1432,9 +1459,22 @@ async def process_openbb_task(
         remember_feishu_task(message_id, status="error", error=f"{type(exc).__name__}: {exc}", ended_at=now_iso())
     else:
         remember_feishu_task(message_id, status="replying", answer_preview=answer[:1000])
+        print(f"Feishu OpenBB task answer ready message_id={message_id} length={len(answer)}", flush=True)
     if send_feishu_reply:
-        await reply_feishu_message_chunks(message_id, answer)
+        try:
+            await reply_feishu_message_chunks(message_id, answer)
+            remember_feishu_task(message_id, reply_sent_at=now_iso())
+            print(f"Feishu reply sent message_id={message_id} length={len(answer)}", flush=True)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            response = getattr(exc, "response", None)
+            if response is not None:
+                detail = f"{detail} body={response.text[:1000]}"
+            remember_feishu_task(message_id, status="reply_error", reply_error=detail, ended_at=now_iso())
+            print(f"Failed to send Feishu reply message_id={message_id} error={detail}", flush=True)
+            return
     remember_feishu_task(message_id, status="done", ended_at=now_iso())
+    print(f"Feishu OpenBB task done message_id={message_id}", flush=True)
 
 
 async def process_feishu_query(message_id: str, text: str) -> None:
@@ -1696,10 +1736,22 @@ async def feishu_events(request: Request, background_tasks: BackgroundTasks) -> 
     text = re.sub(r"@\S+", "", text).strip()
 
     remember_feishu_task(message_id, status="queued", input=text, received_at=now_iso())
-    background_tasks.add_task(add_feishu_reaction_safely, message_id, FEISHU_OPEN_REACTION)
+    print(
+        "Feishu message received "
+        f"message_id={message_id} text={text[:300]} event_type={event.get('type', '')}",
+        flush=True,
+    )
+    schedule_async_task(
+        f"feishu-reaction-{message_id}",
+        add_feishu_reaction_safely(message_id, FEISHU_OPEN_REACTION),
+    )
 
     if text:
-        background_tasks.add_task(process_feishu_query, message_id, text)
+        schedule_async_task(
+            f"feishu-openbb-{message_id}",
+            process_feishu_query(message_id, text),
+        )
+        print(f"Feishu OpenBB task scheduled message_id={message_id}", flush=True)
         return {"status": "openbb_cli_task_started"}
 
     await reply_feishu_card(message_id, build_query_builder_card())
