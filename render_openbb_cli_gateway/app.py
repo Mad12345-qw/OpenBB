@@ -1197,6 +1197,23 @@ def remember_feishu_task(message_id: str, **updates: Any) -> None:
         RECENT_FEISHU_TASKS.pop(oldest_key, None)
 
 
+def configured_provider_guidance() -> str:
+    configured = [
+        key.replace("_api_key", "").replace("_token", "")
+        for key, env_name in OPENBB_CREDENTIAL_ENV.items()
+        if os.getenv(env_name, "").strip()
+    ]
+    base = ["yfinance", "finviz", "sec"]
+    providers = ", ".join(sorted(set(base + configured))) or "yfinance, finviz, sec"
+    return (
+        f"Providers available or preferred in this deployment: {providers}. "
+        "For equity price/history prefer yfinance. "
+        "For equity profile, valuation, financial statements, ratios, management, dividends, and splits prefer fmp when available; otherwise use finviz, yfinance, or sec where applicable. "
+        "For macro use fred when available. "
+        "Do not use intrinio, polygon, benzinga, tradier, nasdaq, or tradingeconomics unless that provider is explicitly requested or listed as available."
+    )
+
+
 def format_cli_answer(question: str, commands: list[str], result: dict[str, Any], summary: str | None = None) -> str:
     parts = [
         "OpenBB Platform CLI 执行结果",
@@ -1244,6 +1261,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                         "Convert the user request into OpenBB Platform CLI routine commands. "
                         "Return only executable OpenBB Platform CLI routine commands, one per line. "
                         "Use current OpenBB Platform paths and include enough commands for a complete research answer. "
+                        f"{configured_provider_guidance()} "
                         "Do not answer from your own knowledge. Do not use FMP/Yahoo directly. "
                         "Do not include shell commands or explanations."
                     ),
