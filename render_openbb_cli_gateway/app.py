@@ -61,6 +61,7 @@ FEISHU_RUN_REACTION = os.getenv("FEISHU_RUN_REACTION", "OnIt")
 MIKOTO_BASE_URL = os.getenv("MIKOTO_BASE_URL", "").rstrip("/")
 MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
+MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "180"))
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
 OPENBB_OBB: Any | None = None
@@ -1381,11 +1382,19 @@ async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, An
     }
 
 
-async def call_model(messages: list[dict[str, str]], max_tokens: int = 1200) -> str:
+async def call_model(
+    messages: list[dict[str, str]],
+    max_tokens: int = 1200,
+    *,
+    purpose: str = "model",
+    timeout_seconds: int | None = None,
+) -> str:
     if not MIKOTO_BASE_URL or not MIKOTO_API_KEY:
         raise HTTPException(status_code=500, detail="Model endpoint is not configured")
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    timeout = timeout_seconds or MODEL_TIMEOUT_SECONDS
+    print(f"Model call start purpose={purpose} timeout={timeout} max_tokens={max_tokens}", flush=True)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{MIKOTO_BASE_URL}/v1/chat/completions",
             headers={"Authorization": f"Bearer {MIKOTO_API_KEY}"},
@@ -1397,7 +1406,9 @@ async def call_model(messages: list[dict[str, str]], max_tokens: int = 1200) -> 
         )
         response.raise_for_status()
         data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        text = data["choices"][0]["message"]["content"].strip()
+        print(f"Model call finished purpose={purpose} chars={len(text)}", flush=True)
+        return text
 
 
 def extract_commands(model_text: str) -> list[str]:
@@ -1408,7 +1419,18 @@ def extract_commands(model_text: str) -> list[str]:
             if OPENBB_REQUIRE_ALLOWED_PREFIX and not line.startswith(tuple(OPENBB_ALLOWED_PREFIXES)):
                 continue
             lines.append(line)
-    return lines[:12]
+    return sanitize_openbb_commands(lines[:12])
+
+
+def sanitize_openbb_command(command: str) -> str:
+    command = re.sub(r"(--period\s+)quarterly\b", r"\1quarter", command, flags=re.IGNORECASE)
+    command = re.sub(r"(--period\s+)q\b", r"\1quarter", command, flags=re.IGNORECASE)
+    command = re.sub(r"(--period\s+)annually\b", r"\1annual", command, flags=re.IGNORECASE)
+    return command
+
+
+def sanitize_openbb_commands(commands: list[str]) -> list[str]:
+    return [sanitize_openbb_command(command) for command in commands]
 
 
 def now_iso() -> str:
@@ -1469,7 +1491,7 @@ def commands_from_user_message(message: str) -> list[str]:
     if any(any(ord(char) > 127 for char in line) for line in lines):
         return []
     if any(looks_like_openbb_routine_line(line) for line in lines):
-        return lines
+        return sanitize_openbb_commands(lines)
     return []
 
 
@@ -1563,6 +1585,73 @@ def format_platform_answer(commands: list[str], result: dict[str, Any], summary:
     return "\n".join(parts).strip()
 
 
+def compact_platform_results_for_summary(result: dict[str, Any]) -> list[dict[str, Any]]:
+    compact_results = []
+    for item in result.get("results", []):
+        compact: dict[str, Any] = {
+            "command": item.get("command"),
+            "route": item.get("route"),
+            "seconds": item.get("seconds"),
+        }
+        if item.get("error"):
+            compact["error"] = item.get("error")
+        output = item.get("output") or {}
+        if isinstance(output, dict):
+            compact["output_type"] = output.get("type")
+            compact["row_count"] = output.get("row_count")
+            compact["truncated"] = output.get("truncated")
+            rows = output.get("rows")
+            if isinstance(rows, list):
+                compact["sample_rows"] = rows[:8]
+            elif "data" in output:
+                data = output.get("data")
+                if isinstance(data, dict):
+                    compact["sample_data"] = dict(list(data.items())[:30])
+                else:
+                    compact["sample_data"] = data
+        compact_results.append(compact)
+    return compact_results
+
+
+def local_platform_summary(result: dict[str, Any]) -> str:
+    results = result.get("results", [])
+    successful = [item for item in results if not item.get("error")]
+    failed = [item for item in results if item.get("error")]
+    lines = [
+        f"OpenBB 已执行 {len(results)} 条路径：成功 {len(successful)} 条，失败 {len(failed)} 条。",
+    ]
+    if successful:
+        lines.append("")
+        lines.append("成功返回的数据：")
+        for item in successful[:8]:
+            output = item.get("output") or {}
+            row_count = output.get("row_count")
+            descriptor = f"{row_count} 行" if row_count is not None else output.get("type", "已返回")
+            lines.append(f"- `{item.get('command')}`：{descriptor}")
+    if failed:
+        lines.append("")
+        lines.append("失败或受限的数据源：")
+        for item in failed[:8]:
+            error = str(item.get("error", "")).replace("\n", " ")
+            if len(error) > 220:
+                error = error[:220] + "..."
+            lines.append(f"- `{item.get('command')}`：{error}")
+    if len(failed) > 8:
+        lines.append(f"- 另外还有 {len(failed) - 8} 条失败，详见结构化结果。")
+    return "\n".join(lines)
+
+
+def format_task_exception(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            "查询过程中超时：模型翻译、模型总结或外部数据接口在限定时间内没有返回。\n"
+            "后台已经记录具体阶段；如果 OpenBB 数据已经执行成功，会优先返回结构化结果，不再因为总结超时判定整次失败。"
+        )
+    if isinstance(exc, HTTPException):
+        return f"查询过程中出错了：HTTP {exc.status_code}: {exc.detail}"
+    return f"查询过程中出错了：{type(exc).__name__}: {exc}"
+
+
 async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str | None = None) -> str:
     if OPENBB_FAST_EQUITY_SNAPSHOT and is_equity_research_request(message):
         try:
@@ -1601,6 +1690,7 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                 {"role": "user", "content": message},
             ],
             max_tokens=1200,
+            purpose=f"translate:{message_id or '-'}",
         )
         commands = extract_commands(command_text)
         print(
@@ -1633,33 +1723,47 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
                 platform_result_preview=json.dumps(result.get("results", []), ensure_ascii=False, default=str)[-1000:],
                 cli_finished_at=now_iso(),
             )
-        summary = await call_model(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Summarize the OpenBB Platform structured output for an investment research chat. "
-                        "Preserve important available fields, metrics, dates, units, and errors. "
-                        "If a command failed or data is missing, say exactly which part failed or is missing."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "question": message,
-                            "commands": commands,
-                            "execution_mode": result["execution_mode"],
-                            "returncode": result["returncode"],
-                            "results": result["results"],
-                        },
-                        ensure_ascii=False,
-                        default=str,
-                    ),
-                },
-            ],
-            max_tokens=2200,
-        )
+        try:
+            summary = await call_model(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize the OpenBB Platform structured output for an investment research chat. "
+                            "Preserve important available fields, metrics, dates, units, and errors. "
+                            "If a command failed or data is missing, say exactly which part failed or is missing."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "question": message,
+                                "commands": commands,
+                                "execution_mode": result["execution_mode"],
+                                "returncode": result["returncode"],
+                                "results": compact_platform_results_for_summary(result),
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    },
+                ],
+                max_tokens=1800,
+                purpose=f"platform_summary:{message_id or '-'}",
+            )
+        except httpx.TimeoutException as exc:
+            print(f"OpenBB summary timed out message_id={message_id or '-'} error={type(exc).__name__}: {exc}", flush=True)
+            summary = (
+                local_platform_summary(result)
+                + "\n\n注：模型总结超时，已先返回 OpenBB 结构化结果；这次不再把整次查询判为失败。"
+            )
+        except Exception as exc:
+            print(f"OpenBB summary failed message_id={message_id or '-'} error={type(exc).__name__}: {exc}", flush=True)
+            summary = (
+                local_platform_summary(result)
+                + f"\n\n注：模型总结失败（{type(exc).__name__}），已先返回 OpenBB 结构化结果。"
+            )
         return format_platform_answer(commands, result, summary)
 
     result = await run_openbb_routine("\n".join(commands) + "\n", timeout_seconds)
@@ -1848,7 +1952,7 @@ async def process_openbb_task(
     try:
         answer = await answer_with_openbb(text, timeout_seconds, message_id=message_id)
     except Exception as exc:
-        answer = f"查询过程中出错了：{type(exc).__name__}: {exc}"
+        answer = format_task_exception(exc)
         remember_feishu_task(message_id, status="error", error=f"{type(exc).__name__}: {exc}", ended_at=now_iso())
     else:
         remember_feishu_task(message_id, status="replying", answer_preview=answer[:1000])

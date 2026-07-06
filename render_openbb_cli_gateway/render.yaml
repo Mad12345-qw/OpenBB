@@ -26,6 +26,8 @@ services:
         sync: false
       - key: MIKOTO_MODEL
         value: gpt-5.5
+      - key: MODEL_TIMEOUT_SECONDS
+        value: "180"
       - key: FEISHU_APP_ID
         sync: false
       - key: FEISHU_APP_SECRET
