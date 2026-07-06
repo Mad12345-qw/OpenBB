@@ -17,6 +17,19 @@ SEEN_FEISHU_MESSAGE_IDS: set[str] = set()
 SEEN_FEISHU_CARD_ACTION_IDS: set[str] = set()
 RECENT_FEISHU_TASKS: dict[str, dict[str, Any]] = {}
 MAX_RECENT_FEISHU_TASKS = 50
+TASK_STATE_PATH = Path(
+    os.getenv(
+        "OPENBB_TASK_STATE_PATH",
+        str(Path(tempfile.gettempdir()) / "openbb_feishu_tasks.json"),
+    )
+)
+INTERRUPTED_TASK_STATUSES = {
+    "running",
+    "translating",
+    "running_cli",
+    "summarizing",
+    "replying",
+}
 
 API_TOKEN = os.getenv("API_TOKEN", "")
 OPENBB_COMMAND = os.getenv("OPENBB_CLI_COMMAND", "openbb")
@@ -1086,16 +1099,17 @@ async def run_openbb_routine(routine: str, timeout_seconds: int) -> dict[str, An
 
         proc = await asyncio.create_subprocess_exec(
             OPENBB_COMMAND,
+            "--file",
+            "routine.openbb",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=temp_dir,
         )
 
-        cli_input = "exe --file routine.openbb\nexit\n".encode("utf-8")
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(cli_input),
+                proc.communicate(),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -1152,6 +1166,34 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def persist_feishu_tasks() -> None:
+    try:
+        TASK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = TASK_STATE_PATH.with_suffix(TASK_STATE_PATH.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps(list(RECENT_FEISHU_TASKS.values()), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(TASK_STATE_PATH)
+    except Exception as exc:
+        print(f"Failed to persist Feishu task state: {type(exc).__name__}: {exc}", flush=True)
+
+
+def load_feishu_tasks() -> None:
+    if not TASK_STATE_PATH.exists():
+        return
+    try:
+        data = json.loads(TASK_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Failed to load Feishu task state: {type(exc).__name__}: {exc}", flush=True)
+        return
+    if not isinstance(data, list):
+        return
+    for item in data[-MAX_RECENT_FEISHU_TASKS:]:
+        if isinstance(item, dict) and isinstance(item.get("message_id"), str):
+            RECENT_FEISHU_TASKS[item["message_id"]] = item
+
+
 def looks_like_openbb_routine_line(line: str) -> bool:
     if not line or any(ord(char) > 127 for char in line):
         return False
@@ -1195,6 +1237,7 @@ def remember_feishu_task(message_id: str, **updates: Any) -> None:
     while len(RECENT_FEISHU_TASKS) > MAX_RECENT_FEISHU_TASKS:
         oldest_key = next(iter(RECENT_FEISHU_TASKS))
         RECENT_FEISHU_TASKS.pop(oldest_key, None)
+    persist_feishu_tasks()
 
 
 def schedule_async_task(name: str, coro: Any) -> None:
@@ -1443,6 +1486,38 @@ async def add_feishu_reaction_safely(message_id: str, emoji_type: str = FEISHU_A
         print(f"Failed to add Feishu reaction: {detail}", flush=True)
 
 
+async def recover_interrupted_feishu_tasks() -> None:
+    for message_id, task in list(RECENT_FEISHU_TASKS.items()):
+        if task.get("status") not in INTERRUPTED_TASK_STATUSES:
+            continue
+        if task.get("send_feishu_reply") is False or task.get("recovery_notice_sent_at"):
+            continue
+        previous_status = task.get("status")
+        remember_feishu_task(
+            message_id,
+            status="interrupted_on_restart",
+            interrupted_status=previous_status,
+            ended_at=now_iso(),
+        )
+        notice = (
+            "OpenBB Platform CLI 执行被服务进程重启中断。\n\n"
+            f"- 中断前状态：{previous_status}\n"
+            "- 这说明飞书消息和表情反应链路已到达后台，但 CLI 子进程在生成结果前被 Render 进程重启打断。\n"
+            "- 这不是把功能限制成股票快照，也不是飞书表情导致的。"
+        )
+        try:
+            await reply_feishu_message_chunks(message_id, notice)
+            remember_feishu_task(message_id, recovery_notice_sent_at=now_iso())
+            print(f"Recovered interrupted Feishu task message_id={message_id}", flush=True)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            response = getattr(exc, "response", None)
+            if response is not None:
+                detail = f"{detail} body={response.text[:1000]}"
+            remember_feishu_task(message_id, recovery_notice_error=detail)
+            print(f"Failed to recover interrupted task message_id={message_id} error={detail}", flush=True)
+
+
 async def process_openbb_task(
     message_id: str,
     text: str,
@@ -1450,7 +1525,13 @@ async def process_openbb_task(
     send_feishu_reply: bool,
     timeout_seconds: int,
 ) -> None:
-    remember_feishu_task(message_id, status="running", input=text, started_at=now_iso())
+    remember_feishu_task(
+        message_id,
+        status="running",
+        input=text,
+        send_feishu_reply=send_feishu_reply,
+        started_at=now_iso(),
+    )
     print(f"Feishu OpenBB task start message_id={message_id} text={text[:300]}", flush=True)
     try:
         answer = await answer_with_openbb(text, timeout_seconds, message_id=message_id)
@@ -1689,7 +1770,9 @@ async def debug_run(
 
 @app.on_event("startup")
 async def startup() -> None:
+    load_feishu_tasks()
     write_openbb_user_settings()
+    schedule_async_task("recover-interrupted-feishu-tasks", recover_interrupted_feishu_tasks())
 
 
 @app.post("/routine")
