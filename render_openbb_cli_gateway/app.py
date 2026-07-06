@@ -1432,6 +1432,12 @@ def sanitize_openbb_command(command: str) -> str:
         command,
         flags=re.IGNORECASE,
     )
+    command = re.sub(
+        r"^/equity/quote\b",
+        "/equity/price/quote",
+        command,
+        flags=re.IGNORECASE,
+    )
     if re.match(r"^/equity/fundamental/(income|balance|cash)\b", command, flags=re.IGNORECASE):
         command = re.sub(r"(--provider\s+)sec\b", r"\1yfinance", command, flags=re.IGNORECASE)
     return command
@@ -1545,6 +1551,7 @@ def configured_provider_guidance() -> str:
         "Use fmp only for the few fundamentals or valuation fields that are not available from yfinance, finviz, or sec, and avoid generating many fmp commands in one routine because free FMP keys can rate-limit. "
         "For SEC filings, company facts, annual reports, and regulatory fundamentals prefer sec. "
         "For equity income, balance, and cash statements prefer yfinance with period annual or quarter; do not use sec for these statement routes in this deployment. "
+        "Use /equity/price/quote for equity quotes; do not use /equity/quote. "
         "Use /equity/calendar/splits for split history. "
         "For macro use fred when available. "
         "Do not use intrinio, polygon, benzinga, tradier, nasdaq, or tradingeconomics unless that provider is explicitly requested or listed as available."
