@@ -63,7 +63,7 @@ MIKOTO_API_KEY = os.getenv("MIKOTO_API_KEY", "")
 MIKOTO_MODEL = os.getenv("MIKOTO_MODEL", "gpt-5.5")
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "180"))
 MODEL_TRANSLATE_TIMEOUT_SECONDS = int(os.getenv("MODEL_TRANSLATE_TIMEOUT_SECONDS", "60"))
-MODEL_SUMMARY_TIMEOUT_SECONDS = int(os.getenv("MODEL_SUMMARY_TIMEOUT_SECONDS", "75"))
+MODEL_SUMMARY_TIMEOUT_SECONDS = int(os.getenv("MODEL_SUMMARY_TIMEOUT_SECONDS", "20"))
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
 OPENBB_OBB: Any | None = None
@@ -1772,6 +1772,8 @@ async def answer_with_openbb(message: str, timeout_seconds: int, message_id: str
         return "股票快照查询失败：没有识别到可用股票代码或 FMP_API_KEY 未配置。"
 
     commands = commands_from_user_message(message)
+    if not commands:
+        commands = default_equity_research_commands(message)
     if not commands:
         if message_id:
             remember_feishu_task(message_id, status="translating", translate_started_at=now_iso())
